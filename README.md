@@ -145,23 +145,40 @@ The first time it will take a minute or two to "build" the program before it run
 To run Sauce again, open PowerShell and repeat the instructions in Step 3.
 Remember that launching Sauce after the first time should be faster.
 
-=======
-And you're still free to donate to him if you so wish, to show your appreciation for the program he created.
-
 ## Installation instructions (Mac)
 I'm planning to generate the binaries as soon as I have some time for it, but
-for now, you can follow these instructions to run it:
+for now, you can follow these instructions to run it. You'll need to open the
+Terminal app. If that's scary, you'll just need to copy commands.
 
-### Install brew and npm
+### Install brew
 ```sh
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+### Install npm
+```sh
 brew install npm
 ```
 
-### Build and run Sauce
+### Clone this repository
 ```sh
-npm run
+git clone https://github.com/janoma/sauce4zwift.git
 ```
+
+### Build and run Sauce
+Go to the root of the repository and simply run this command
+```sh
+make run
+```
+
+You'll need to keep the Terminal app open while Sauce is running.
+
+Your login information is stored in the system keychain, so it will be secure
+and it can be reused over subsequent launches of Sauce.
+
+You can close Sauce as usual with ⌘+Q from the 'Electron' app. Again, I'll try
+to make the builds, but as this is a quick experiment first, I don't have that
+yet.
 
 ***
 
