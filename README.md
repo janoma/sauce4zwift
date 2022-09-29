@@ -1,5 +1,5 @@
 # Sauce for Zwift without the Patreon block
-Use Sauce for Zwift without the annoying Patreon prompt that prevents you from
+Use Sauce for Zwift without the Patreon prompt that prevents you from
 using it unless you make financial contributions to the author.
 
 ### Is this fair?
@@ -7,7 +7,7 @@ That's a judgement call for each of you to make. The important question is...
 
 ### Is this legal?
 Yes. The original Sauce for Zwift is distributed under the
-[https://www.gnu.org/licenses/gpl-3.0.en.html](GNU General Public License v3),
+[GNU General Public License v3](https://www.gnu.org/licenses/gpl-3.0.en.html),
 which allows for redistribution of the source code with any modifications under
 the same license, which is what I'm doing here.
 
