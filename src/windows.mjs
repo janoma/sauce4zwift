@@ -2,7 +2,6 @@ import path from 'node:path';
 import os from 'node:os';
 import {fileURLToPath} from 'node:url';
 import * as storage from './storage.mjs';
-import * as patreon from './patreon.mjs';
 import * as rpc from './rpc.mjs';
 import {EventEmitter} from 'node:events';
 import {sleep} from '../shared/sauce/base.mjs';
@@ -664,61 +663,6 @@ function scrubUA(win) {
     // Prevent Patreon's datedome.co bot service from blocking us.
     const ua = win.webContents.userAgent;
     win.webContents.userAgent = ua.replace(/ SauceforZwift.*? /, ' ').replace(/ Electron\/.*? /, ' ');
-}
-
-
-export async function patronLink() {
-    let membership = storage.load('patron-membership');
-    if (membership && membership.patronLevel >= 10) {
-        // XXX Implement refresh once in a while.
-        return true;
-    }
-    const win = makeCaptiveWindow({
-        page: 'patron.html',
-        width: 400,
-        height: 720,
-    }, {
-        preload: path.join(appPath, 'src', 'preload', 'patron-link.js'),
-        partition: 'persist:patreon',
-    });
-    scrubUA(win);
-    let resolve;
-    electron.ipcMain.on('patreon-auth-code', (ev, code) => resolve({code}));
-    electron.ipcMain.on('patreon-special-token', (ev, token) => resolve({token}));
-    electron.ipcMain.on('patreon-reset-session', async () => {
-        win.webContents.session.clearStorageData();
-        win.webContents.session.clearCache();
-        electron.app.relaunch();
-        win.close();
-    });
-    win.on('closed', () => resolve({closed: true}));
-    while (true) {
-        const {code, token, closed} = await new Promise(_resolve => resolve = _resolve);
-        let isAuthed;
-        if (closed) {
-            return false;
-        } else if (token) {
-            membership = await patreon.getLegacyMembership(token);
-        } else {
-            isAuthed = code && await patreon.link(code);
-            membership = isAuthed && await patreon.getMembership();
-        }
-        if (membership && membership.patronLevel >= 10) {
-            storage.save('patron-membership', membership);
-            win.close();
-            return true;
-        } else {
-            const q = new URLSearchParams();
-            if (isAuthed) {
-                q.set('id', patreon.getUserId());
-                if (membership) {
-                    q.set('isPatron', true);
-                    q.set('patronLevel', membership.patronLevel);
-                }
-            }
-            win.loadURL(`file://${path.join(pagePath, 'non-patron.html')}?${q}`);
-        }
-    }
 }
 
 
