@@ -1,3 +1,36 @@
+# Sauce for Zwift without the Patreon block
+Use Sauce for Zwift without the annoying Patreon prompt that prevents you from
+using it unless you make financial contributions to the author.
+
+### Is this fair?
+That's a judgement call for each of you to make. The important question is...
+
+### Is this legal?
+Yes. The original Sauce for Zwift is distributed under the
+[https://www.gnu.org/licenses/gpl-3.0.en.html](GNU General Public License v3),
+which allows for redistribution of the source code with any modifications under
+the same license, which is what I'm doing here.
+
+### But the poor guy has to eat!
+And you're still free to donate to him if you so wish, to show your appreciation for the program he created.
+
+## Installation instructions (Mac)
+I'm planning to generate the binaries as soon as I have some time for it, but
+for now, you can follow these instructions to run it:
+
+### Install brew and npm
+```sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+brew install npm
+```
+
+### Build and run Sauce
+```sh
+npm run
+```
+
+***
+
 Sauce for Zwift™
 ===========
 ![Sauce](pages/images/logo_horiz_320x120.png)
@@ -85,7 +118,7 @@ I don't work for Zwift nor do I represent them.  I assume no liability bla
 bla bla.  You get the idea.
 
 
-Support my work
+Support the creator of Sauce 4 Zwift
 --------
 <a href="https://www.patreon.com/bePatron?u=32064618" target="_blank">
     <img src="pages/images/become_a_patron_button@2x.png" width="150"/>
