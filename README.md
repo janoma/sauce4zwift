@@ -145,6 +145,24 @@ The first time it will take a minute or two to "build" the program before it run
 To run Sauce again, open PowerShell and repeat the instructions in Step 3.
 Remember that launching Sauce after the first time should be faster.
 
+=======
+And you're still free to donate to him if you so wish, to show your appreciation for the program he created.
+
+## Installation instructions (Mac)
+I'm planning to generate the binaries as soon as I have some time for it, but
+for now, you can follow these instructions to run it:
+
+### Install brew and npm
+```sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+brew install npm
+```
+
+### Build and run Sauce
+```sh
+npm run
+```
+
 ***
 
 Sauce for Zwift™
