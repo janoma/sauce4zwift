@@ -102,6 +102,36 @@ $header-height: 0.56in;
     --theme-button-bar-bottom-right: #2b0078de;
 }
 
+html[data-theme="wlc"] {
+    --theme-bg-hue: 196;
+    --theme-bg-sat: 95%;
+    --theme-bg-light: 43%;
+    --theme-bg-shade-dir: 1;
+
+    --theme-bg2-hue: 324;
+    --theme-bg2-sat: 95%;
+    --theme-bg2-light: 46%;
+    --theme-bg2-shade-dir: 1;
+
+    --theme-fg-hue: 0;
+    --theme-fg-sat: 0%;
+    --theme-fg-light: 90%;
+    --theme-fg-shade-dir: -1;
+
+    --theme-primary-hue: 0;
+    --theme-primary-sat: 0%;
+    --theme-primary-light: 20%;
+    --theme-primary-shade-dir: 1;
+
+    --theme-following-hue: 30;
+    --theme-following-sat: 73%;
+    --theme-following-light: 52%;
+    --theme-following-shade-dir: -1;
+
+    --theme-button-bar-top-left: #0008;
+    --theme-button-bar-bottom-right: #000;
+}
+
 html[data-theme="bluepink"] {
     --theme-bg-hue: 204;
     --theme-bg-sat: 100%;
