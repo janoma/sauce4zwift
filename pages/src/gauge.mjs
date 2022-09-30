@@ -55,9 +55,9 @@ const gaugeConfigs = {
         name: 'Power',
         defaultSettings: {
             min: 0,
-            max: 700,
+            max: 1000,
         },
-        color: '#35e',
+        color: '#09c',
         getValue: x => settings.dataSmoothing ? x.stats.power.smooth[settings.dataSmoothing] : x.state.power,
         getAvgValue: x =>
             (settings.currentLap ? x.stats.laps.at(-1).power : x.stats.power).avg,
@@ -109,7 +109,7 @@ const gaugeConfigs = {
     },
     draft: {
         name: 'Draft',
-        color: '#930',
+        color: '#c06',
         ticks: 6,
         defaultSettings: {
             min: 0,
@@ -268,7 +268,7 @@ export async function main() {
                     itemStyle: {
                         color: config.color,
                         opacity: 0.9,
-                        borderColor: '#000',
+                        borderColor: '#444',
                         borderWidth: 2 * relSize,
                         shadowColor: '#0007',
                         shadowBlur: 8 * relSize,
