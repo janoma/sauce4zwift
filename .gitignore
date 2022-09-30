@@ -110,3 +110,6 @@ out
 
 pages/css
 .build
+
+# IntelliJ settings
+.idea
