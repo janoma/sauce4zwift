@@ -38,7 +38,7 @@ const gaugeConfigs = {
         name: 'Power',
         defaultSettings: {
             min: 0,
-            max: 700,
+            max: 1000,
         },
         defaultColor: '#35e',
         getValue: x => settings.dataSmoothing ? x.stats.power.smooth[settings.dataSmoothing] : x.state.power,
