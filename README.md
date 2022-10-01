@@ -112,7 +112,8 @@ choco install make
 
 Download and install [Visual Studio](https://visualstudio.microsoft.com/downloads/).
 The free Community edition is fine. When you install, select the following Workloads:
-**Node.js development**, **Desktop development with C++** and **Game development with C++**.
+**Node.js development**, **Desktop development with C++** and **Game development with
+C++**. This is probably more than what you actually need, but it worked for me.
 
 ### 2. Clone repository
 Open PowerShell and go to the Downloads directory
