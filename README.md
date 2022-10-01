@@ -25,8 +25,8 @@ repository and run `make run`.
 
 For all the rest, here are the instructions in a *for dummies* mode.
 
-First, open the Terminal app. It can be intimidating the first time, but you'll
-just need to copy commands.
+First, open the Terminal app (from `/Applications/Utilities/Terminal`). It can
+be intimidating the first time, but you'll just need to copy commands.
 
 ### 1. Install brew
 Copy this command, paste it in the terminal and press Enter to run it. It will
