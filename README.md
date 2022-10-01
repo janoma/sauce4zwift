@@ -89,6 +89,58 @@ To run Sauce again, open the Terminal app and repeat step 4 above. From the
 second time, launching Sauce will be faster because the "build" happened the
 first time.
 
+## Installation* instructions (Windows)
+Please note that, to be precise, these are *running* instructions, as you won't
+be installing an app in your `C:\Program Files` directory.
+
+Also note that Windows is not my main operating system, so the instructions here
+could very well be more complex than needed, but they did work for me. I use
+Windows 10 Home.
+
+### 1. Install required apps
+Download and install [nodejs](https://nodejs.org/en/download/),
+[git](https://git-scm.com/download/win) and
+[PowerShell](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-windows?view=powershell-7.2#msi).
+
+Open PowerShell **in administrator mode** and follow [these instructions](https://chocolatey.org/install)
+to install Chocolatey. Once the `choco` command is available to you, use it to
+install `make`:
+
+```sh
+choco install make
+```
+
+Download and install [Visual Studio](https://visualstudio.microsoft.com/downloads/).
+The free Community edition is fine. When you install, select the following Workloads:
+**Node.js development**, **Desktop development with C++** and **Game development with C++**.
+
+### 2. Clone repository
+Open PowerShell and go to the Downloads directory
+
+```sh
+cd ~\Downloads
+```
+
+Call `git` to copy the code you'll need:
+
+```sh
+git clone https://github.com/janoma/sauce4zwift.git
+```
+
+### 3. Build and run Sauce
+In PowerShell, go to the directory where the repository was copied and run `make run`:
+
+```sh
+cd ~\Downloads\sauce4zwift
+make run
+```
+
+The first time it will take a minute or two to "build" the program before it runs.
+
+### Running it again
+To run Sauce again, open PowerShell and repeat the instructions in Step 3.
+Remember that launching Sauce after the first time should be faster.
+
 ***
 
 Sauce for Zwift™
