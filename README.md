@@ -15,40 +15,79 @@ the same license, which is what I'm doing here.
 And you're still free to donate to him if you so wish, to show your appreciation
 for the program he created.
 
-## Installation instructions (Mac)
-I'm planning to generate the binaries as soon as I have some time for it, but
-for now, you can follow these instructions to run it. You'll need to open the
-Terminal app. If that's scary, you'll just need to copy commands.
+## Installation* instructions (Mac)
+Please note that, to be precise, these are *running* instructions, as you won't
+be installing an app in your `/Applications` directory.
 
-### Install brew
+For the power users, I assume you have `brew`. Install `npm` if you don't have
+it with `brew install npm`, clone this repository, go to the root of the
+repository and run `make run`.
+
+For all the rest, here are the instructions in a *for dummies* mode.
+
+First, open the Terminal app. It can be intimidating the first time, but you'll
+just need to copy commands.
+
+### 1. Install brew
+Copy this command, paste it in the terminal and press Enter to run it. It will
+ask for your password, the one you use in your Mac, as you're installing a
+utility that does stuff with system files.
+
 ```sh
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 ```
 
-### Install npm
+At the end of this installation you'll see a message saying "Next steps". Please
+follow those instructions so that the `brew` command will be available to you.
+You can check whether brew is installed by running `brew -v`. If you get a
+couple of lines mentioning `Homebrew`, you got it. If you get "Command not
+found: brew" or a similar error, you need to perform the "Next Steps" as
+mentioned before. You can also try closing the Terminal app and opening it
+again.
+
+### 2. Install npm
+Now you'll use `brew` from the previous step to install another program called
+`npm`.
+
 ```sh
 brew install npm
 ```
 
-### Clone this repository
+### 3. Clone this repository
+This will copy this repository in your `Downloads` directory so that you can
+build and run Sauce from there. Execute these lines one by one:
+
 ```sh
+cd ~/Downloads
 git clone https://github.com/janoma/sauce4zwift.git
 ```
 
-### Build and run Sauce
-Go to the root of the repository and simply run this command
+If this is the first time you're using the program called `git`, your Mac will
+ask you to install some "Command Line Utilities". Accept and wait for the
+installation, then run the `git` command again, because the first time it
+wouldn't have run.
+
+### 4. Build and run Sauce
+Go to the root of the repository and use `make run` to build and run Sauce:
+
 ```sh
+cd ~/Downloads/sauce4zwift
 make run
 ```
 
 You'll need to keep the Terminal app open while Sauce is running.
 
 Your login information is stored in the system keychain, so it will be secure
-and it can be reused over subsequent launches of Sauce.
+and it can be reused over subsequent launches of Sauce. The keychain usage will
+probably require your password once, the first time you log in with your main
+Zwift account and your secondary account.
 
-You can close Sauce as usual with ⌘+Q from the 'Electron' app. Again, I'll try
-to make the builds, but as this is a quick experiment first, I don't have that
-yet.
+You can close Sauce as usual with ⌘+Q from the 'Electron' app.
+
+### Running it again
+To run Sauce again, open the Terminal app and repeat step 4 above. From the
+second time, launching Sauce will be faster because the "build" happened the
+first time.
 
 ***
 
