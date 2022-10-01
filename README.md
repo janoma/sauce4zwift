@@ -136,6 +136,8 @@ cd ~\Downloads\sauce4zwift
 make run
 ```
 
+You'll need to keep the PowerShell app open while Sauce is running.
+
 The first time it will take a minute or two to "build" the program before it runs.
 
 ### Running it again
