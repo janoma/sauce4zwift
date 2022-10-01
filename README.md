@@ -99,7 +99,8 @@ Windows 10 Home.
 
 ### 1. Install required apps
 Download and install [nodejs](https://nodejs.org/en/download/),
-[git](https://git-scm.com/download/win) and
+[git](https://git-scm.com/download/win),
+[python](https://www.python.org/downloads/windows/) and
 [PowerShell](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-windows?view=powershell-7.2#msi).
 
 Open PowerShell **in administrator mode** and follow [these instructions](https://chocolatey.org/install)
