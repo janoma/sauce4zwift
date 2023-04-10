@@ -1,7 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import {fileURLToPath} from 'node:url';
-import * as storage from './storage.mjs';
+import * as storageMod from './storage.mjs';
 import * as rpc from './rpc.mjs';
 import * as mods from './mods.mjs';
 import {EventEmitter} from 'node:events';
