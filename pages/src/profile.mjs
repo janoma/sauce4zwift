@@ -1,8 +1,9 @@
 import * as common from './common.mjs';
 import {locale, template} from '../../shared/sauce/index.mjs';
 
-const q = new URLSearchParams(location.search);
+common.enableSentry();
 
+const q = new URLSearchParams(location.search);
 const H = locale.human;
 const ident = q.get('id') || q.get('athleteId') || 'self';
 let gettingAthlete;
@@ -30,14 +31,14 @@ export async function main() {
         document.title = `${athlete.sanitizedFullname} - Sauce for Zwift™`;
     }
     const tpl = await gettingTemplate;
-    const gameConnectionStatus = await gettingGameConnectionStatus;
+    const gcs = await gettingGameConnectionStatus;
     const {nations, flags} = await pendingInitNationFlags;
     const debug = location.search.includes('debug');
     const tplData = {
         debug,
-        athleteId: athlete && athlete.id,
+        athleteId: athlete?.id || ident,
         athlete,
-        gameConnectionStatus,
+        gameConnection: gcs && gcs.connected,
         nations,
         flags,
         common,
@@ -85,23 +86,6 @@ function handleInlineEdit(el, {athleteId, athlete}, rerender) {
 }
 
 
-async function exportFITActivity(athleteId) {
-    const fitData = await common.rpc.exportFIT(athleteId);
-    const f = new File([new Uint8Array(fitData)], `${athleteId}.fit`, {type: 'application/binary'});
-    const l = document.createElement('a');
-    l.download = f.name;
-    l.style.display = 'none';
-    l.href = URL.createObjectURL(f);
-    try {
-        document.body.appendChild(l);
-        l.click();
-    } finally {
-        URL.revokeObjectURL(l.href);
-        l.remove();
-    }
-}
-
-
 export async function render(el, tpl, tplData) {
     const athleteId = tplData.athleteId;
     const rerender = async () => el.replaceChildren(...(await tpl(tplData)).children);
@@ -124,12 +108,6 @@ export async function render(el, tpl, tplData) {
         } else if (a.dataset.action === 'watch') {
             await common.rpc.watch(athleteId);
             return;
-        } else if (a.dataset.action === 'exportFit') {
-            await exportFITActivity(athleteId);
-            return;
-        } else if (a.dataset.action === 'join') {
-            await common.rpc.join(athleteId);
-            return;
         } else if (a.dataset.action === 'follow') {
             tplData.athlete = await common.rpc.setFollowing(athleteId);
         } else if (a.dataset.action === 'unfollow') {
@@ -144,6 +122,19 @@ export async function render(el, tpl, tplData) {
         }
         await rerender();
     });
+    let inGame;
+    function setInGame(en) {
+        if (en === inGame) {
+            return;
+        }
+        inGame = en;
+        const nodes = el.querySelectorAll('.enabled-in-game-only');
+        if (inGame) {
+            nodes.forEach(x => x.removeAttribute('disabled'));
+        } else {
+            nodes.forEach(x => x.setAttribute('disabled', 'disabled'));
+        }
+    }
     let lastUpdate = 0;
     function updatePlayerState(state) {
         lastUpdate = Date.now();
@@ -152,7 +143,7 @@ export async function render(el, tpl, tplData) {
             .map(x => [x.dataset.id, x]));
         liveEls.world.textContent = world ? world.name : '-';
         liveEls.power.innerHTML = H.power(state.power, {suffix: true, html: true});
-        liveEls.speed.innerHTML = H.pace(state.speed, {suffix: true, html: true});
+        liveEls.speed.innerHTML = H.pace(state.speed, {suffix: true, html: true, sport: state.sport});
         liveEls.hr.textContent = H.number(state.heartrate);
         liveEls.rideons.textContent = H.number(state.rideons);
         liveEls.kj.textContent = H.number(state.kj);
@@ -161,12 +152,12 @@ export async function render(el, tpl, tplData) {
         }
     }
     async function getPlayerState() {
-        if (document.hidden) {
-            console.warn("hidden");
+        if (!common.isVisible()) {
             return;
         }
         console.debug("Using RPC get player state");
         const state = await common.rpc.getPlayerState(athleteId);
+        setInGame(!!state);
         if (state) {
             updatePlayerState(state);
         }
@@ -181,7 +172,10 @@ export async function render(el, tpl, tplData) {
     }, 10000);
     await rerender();
     await getPlayerState();
-    const onAthleteData = data => updatePlayerState(data.state);
+    const onAthleteData = data => {
+        setInGame(true);
+        updatePlayerState(data.state);
+    };
     await common.subscribe(`athlete/${athleteId}`, onAthleteData);
     return function cleanup() {
         clearInterval(pollInterval);

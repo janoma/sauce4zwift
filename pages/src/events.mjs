@@ -2,8 +2,9 @@ import * as sauce from '../../shared/sauce/index.mjs';
 import * as common from './common.mjs';
 import {render as profileRender} from './profile.mjs';
 
+common.enableSentry();
+
 const L = sauce.locale;
-//const H = L.human;
 common.settingsStore.setDefault({});
 const imperial = common.settingsStore.get('/imperialUnits');
 L.setImperial(imperial);
@@ -32,11 +33,7 @@ async function getEventsWithRetry() {
     const now = Date.now();
     const events = new Map();
     for (const x of data) {
-        const ts = new Date(x.eventStart).getTime();
-        if (ts < now - 60 * 60 * 1000) {
-            continue;
-        }
-        x.started = ts < now;
+        x.started = x.ts < now;
         events.set(x.id, x);
     }
     return events;
@@ -46,8 +43,8 @@ async function getEventsWithRetry() {
 export async function main() {
     common.initInteractionListeners();
     const pendingNationInit = common.initNationFlags();
-    let gameConnectionStatus = await common.rpc.getGameConnectionStatus();
-    common.subscribe('status', gcs => (gameConnectionStatus = gcs), {source: 'gameConnection'});
+    let gcs = await common.rpc.getGameConnectionStatus();
+    common.subscribe('status', x => (gcs = x), {source: 'gameConnection'});
     const events = await getEventsWithRetry();
     const contentEl = await render(events);
     const eventDetailTpl = await sauce.template.getTemplate(`templates/event-details.html.tpl`);
@@ -56,21 +53,19 @@ export async function main() {
     const cleanupCallbacks = new Set();
     common.initExpanderTable(contentEl.querySelector('table'), async (eventDetailsEl, eventSummaryEl) => {
         const event = events.get(Number(eventSummaryEl.dataset.eventId));
-        if (!event.routeId) {
-            debugger;
-        }
+        console.log(event);
         const route = await getRoute(event.routeId);
         const worldList = await common.getWorldList();
         const world = worldList.find(x =>
             event.mapId ? x.worldId === event.mapId : x.stringId === route.world);
-        const subgroups = await Promise.all(event.eventSubgroups.map(async sg => {
+        const subgroups = event.eventSubgroups ? await Promise.all(event.eventSubgroups.map(async sg => {
             const entrants = await common.rpc.getEventSubgroupEntrants(sg.id);
             const sgRoute = await getRoute(sg.routeId);
             for (const x of entrants) {
                 athletes.set(x.id, x.athlete);
             }
             return {...sg, route: sgRoute, entrants};
-        }));
+        })) : [];
         console.info(event, subgroups);
         eventDetailsEl.append(await eventDetailTpl({
             event,
@@ -89,7 +84,7 @@ export async function main() {
                     embedded: true,
                     athleteId,
                     athlete: athletes.get(athleteId),
-                    gameConnectionStatus,
+                    gameConnection: gcs && gcs.connected,
                     nations,
                     flags,
                     common,
@@ -119,13 +114,15 @@ export async function main() {
         } catch(e) {/*no-pragma*/}
         if (re) {
             for (const x of events.values()) {
-                if (!(`${x.name} ${x.type.replace(/_/g, ' ')} ${x.description}`).match(re)) {
+                const text = `${x.name} ${x.eventType.replace(/_/g, ' ')} ${x.description}`;
+                if (!text.match(re)) {
                     hide.add(x.id);
                 }
             }
         } else if (search) {
             for (const x of events.values()) {
-                if (!(`${x.name} ${x.type.replace(/_/g, ' ')} ${x.description}`).toLowerCase().includes()) {
+                const text = `${x.name} ${x.eventType.replace(/_/g, ' ')} ${x.description}`;
+                if (!text.toLowerCase().includes()) {
                     hide.add(x.id);
                 }
             }
@@ -148,8 +145,7 @@ async function render(events) {
         eventBadge: common.eventBadge,
     });
     const contentEl = document.querySelector('#content');
-    contentEl.innerHTML = '';
-    contentEl.append(frag);
+    contentEl.replaceChildren(frag);
     return contentEl;
 }
 

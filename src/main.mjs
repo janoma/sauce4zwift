@@ -1,6 +1,8 @@
 import process from 'node:process';
 import os from 'node:os';
 import net from 'node:net';
+import fs from 'node:fs';
+import path from 'node:path';
 import {EventEmitter} from 'node:events';
 import * as report from '../shared/report.mjs';
 import * as storage from './storage.mjs';
@@ -15,14 +17,34 @@ import * as zwift from './zwift.mjs';
 import * as windows from './windows.mjs';
 import * as mods from './mods.mjs';
 import {parseArgs} from './argparse.mjs';
+import protobuf from 'protobufjs';
+import fetch from 'node-fetch';
 
+const sauceScheme = 'sauce4zwift';
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
 const {autoUpdater} = require('electron-updater');
 const electron = require('electron');
 const isDEV = !electron.app.isPackaged;
-const zwiftAPI = new zwift.ZwiftAPI();
-const zwiftMonitorAPI = new zwift.ZwiftAPI();
+const defaultUpdateChannel = pkg.version.match(/alpha/) ? 'alpha' :
+    pkg.version.match(/beta/) ?  'beta' : 'stable';
+const updateChannelLevels = {stable: 10, beta: 20, alpha: 30};
+
+let zwiftAPI;
+let zwiftMonitorAPI;
+
+if (isDEV) {
+    const pb_Reader_skip = protobuf.Reader.prototype.skip;
+    protobuf.Reader.prototype.skip = function(length) {
+        const start = this.pos;
+        const r = pb_Reader_skip.apply(this, arguments);
+        const end = this.pos;
+        console.error("Protobuf missing field:", this, start, end,
+                      this.buf.subarray(start, end).toString('hex'));
+        console.info(this.buf.subarray(0, this.len).toString('hex'));
+        return r;
+    };
+}
 
 let sauceApp;
 let ipcSubIdInc = 1;
@@ -37,8 +59,16 @@ export let started;
 export let quiting;
 
 
+export class Exiting extends Error {}
+
+
 export function getApp() {
     return sauceApp;
+}
+
+
+function userDataPath(...args) {
+    return path.join(electron.app.getPath('userData'), ...args);
 }
 
 
@@ -71,10 +101,13 @@ try {
     ]).finally(() => quit(1));
 }
 
-electron.app.on('second-instance', (ev,_, __, {type}) => {
+electron.app.on('second-instance', (ev,_, __, {type, ...args}) => {
     if (type === 'quit') {
         console.warn("Another instance requested us to quit.");
         quit();
+    } else if (type === 'open-url') {
+        electron.app.focus();
+        electron.app.emit('open-url', null, args.url);
     }
 });
 electron.app.on('before-quit', () => void (quiting = true));
@@ -153,7 +186,7 @@ electron.ipcMain.handle('subscribe', (ev, {event, persistent, source='stats'}) =
         let json = serialCache.get(data);
         if (!json) {
             json = JSON.stringify(data);
-            if (typeof data === 'object') {
+            if (data != null && typeof data === 'object') {
                 serialCache.set(data, json);
             }
         }
@@ -255,11 +288,6 @@ async function getLocalRoutedIP() {
 
 
 class SauceApp extends EventEmitter {
-    _defaultSettings = {
-        webServerEnabled: true,
-        webServerPort: 1080,
-        updateChannel: 'stable',
-    };
     _settings;
     _settingsKey = 'app-settings';
     _metricsPromise;
@@ -277,7 +305,7 @@ class SauceApp extends EventEmitter {
 
     getSetting(key, def) {
         if (!this._settings) {
-            this._settings = storage.get(this._settingsKey) || {...this._defaultSettings};
+            this._settings = storage.get(this._settingsKey) || {};
         }
         if (!Object.prototype.hasOwnProperty.call(this._settings, key) && def !== undefined) {
             this._settings[key] = def;
@@ -288,7 +316,7 @@ class SauceApp extends EventEmitter {
 
     setSetting(key, value) {
         if (!this._settings) {
-            this._settings = storage.get(this._settingsKey) || {...this._defaultSettings};
+            this._settings = storage.get(this._settingsKey) || {};
         }
         this._settings[key] = value;
         storage.set(this._settingsKey, this._settings);
@@ -302,7 +330,11 @@ class SauceApp extends EventEmitter {
             stable: 'latest',
             beta: 'beta',
             alpha: 'alpha'
-        }[this.getSetting('updateChannel')] || 'latest';
+        }[this.getSetting('updateChannel', defaultUpdateChannel)] || 'latest';
+        // NOTE: The github provider for electron-updater is pretty nuanced.
+        // We might want to replace it with our own at some point as this very
+        // important logic.
+        autoUpdater.allowPrerelease = autoUpdater.channel !== 'latest';
         let updateAvail;
         // Auto updater was written by an alien.  Must use events to affirm update status.
         autoUpdater.once('update-available', () => void (updateAvail = true));
@@ -310,11 +342,11 @@ class SauceApp extends EventEmitter {
         try {
             const update = await autoUpdater.checkForUpdates();
             if (updateAvail) {
-                return update.versionInfo;
+                return update.updateInfo;
             }
         } catch(e) {
             // A variety of non critical conditions can lead to this, log and move on.
-            console.warn("Auto update problem:", e);
+            console.warn("Auto update problem:", e.stack);
             return;
         }
     }
@@ -393,19 +425,19 @@ class SauceApp extends EventEmitter {
         });
         if (confirmed) {
             console.warn('Reseting state and restarting...');
-            await storage.reset();
-            await secrets.remove('zwift-login');
-            await secrets.remove('zwift-monitor-login');
-            await electron.session.defaultSession.clearStorageData();
-            await electron.session.defaultSession.clearCache();
+            await secrets.remove('zwift-login').catch(report.error);
+            await secrets.remove('zwift-monitor-login').catch(report.error);
+            await electron.session.defaultSession.clearStorageData().catch(report.error);
+            await electron.session.defaultSession.clearCache().catch(report.error);
             const patreonSession = electron.session.fromPartition('persist:patreon');
-            await patreonSession.clearStorageData();
-            await patreonSession.clearCache();
+            await patreonSession.clearStorageData().catch(report.error);
+            await patreonSession.clearCache().catch(report.error);
             for (const {id} of windows.getProfiles()) {
                 const s = windows.loadSession(id);
-                await s.clearStorageData();
-                await s.clearCache();
+                await s.clearStorageData().catch(report.error);
+                await s.clearCache().catch(report.error);
             }
+            storage.reset();
             restart();
         }
     }
@@ -419,6 +451,7 @@ class SauceApp extends EventEmitter {
             zwiftMonitorAPI,
             gameAthleteId: args.athleteId || zwiftAPI.profile.id,
             randomWatch: args.randomWatch,
+            exclusions: args.exclusions,
         });
         gameMonitor.on('multiple-logins', () => {
             electron.dialog.showErrorBox(
@@ -441,10 +474,10 @@ class SauceApp extends EventEmitter {
         this.statsProc.start();
         rpcSources.stats = this.statsProc;
         rpcSources.app = this;
-        if (this.getSetting('webServerEnabled')) {
+        if (this.getSetting('webServerEnabled', true)) {
             ip = ip || await getLocalRoutedIP();
             this.webServerEnabled = true;
-            this.webServerPort = this.getSetting('webServerPort');
+            this.webServerPort = this.getSetting('webServerPort', 1080);
             this.webServerURL = `http://${ip}:${this.webServerPort}`;
             // Will stall when there is a port conflict..
             webServer.start({
@@ -522,20 +555,54 @@ async function maybeDownloadAndInstallUpdate({version}) {
         }
         return;
     }
-    quiting = true;  // auto updater closes windows before quiting. Must not save state.
+    quiting = true;  // auto updater closes windows before quitting. Must not save state.
     autoUpdater.quitAndInstall();
-    return true;
+    throw new Exiting();
+}
+
+
+async function updateExclusions() {
+    let data;
+    try {
+        const r = await fetch('https://www.sauce.llc/products/sauce4zwift/exclusions.json');
+        data = await r.json();
+    } catch(e) {
+        report.error(e);
+    }
+    if (!data) {
+        console.warn("No exclusions list found");
+        return;
+    }
+    await fs.promises.writeFile(userDataPath('exclusions_cached.json'), JSON.stringify(data));
+    return data;
+}
+
+
+async function getExclusions() {
+    // use the local cache copy if possible and update in the bg.
+    let data;
+    try {
+        data = JSON.parse(fs.readFileSync(userDataPath('exclusions_cached.json')));
+    } catch(e) {/*no-pragma*/}
+    const updating = updateExclusions();
+    if (!data) {
+        console.info("Waiting for network fetch of exclusions...");
+        data = await updating;
+    }
+    return data && new Set(data.map(x => x.idhash));
 }
 
 
 export async function main({logEmitter, logFile, logQueue, sentryAnonId,
-                            loaderSettings, saveLoaderSettings}) {
+                            loaderSettings, saveLoaderSettings, buildEnv}) {
     const s = Date.now();
     const args = parseArgs([
         {arg: 'headless', type: 'switch',
          help: 'Do not open windows (unless required on startup)'},
         {arg: 'force-login', type: 'switch',
          help: 'Re-login to Zwift accounts'},
+        {arg: 'force-patron-check', type: 'switch',
+         help: 'Force check of patron membership'},
         {arg: 'disable-monitor', type: 'switch',
          help: 'Do not start the Zwift monitor (no data)'},
         {arg: 'host', type: 'str', label: 'HOSTNAME',
@@ -558,6 +625,7 @@ export async function main({logEmitter, logFile, logQueue, sentryAnonId,
         rpc.register(() => electron.shell.showItemInFolder(logFile), {name: 'showLogInFolder'});
     }
     rpc.register(() => sentryAnonId, {name: 'getSentryAnonId'});
+    rpc.register(() => !isDEV ? buildEnv.sentry_dsn : null, {name: 'getSentryDSN'});
     rpc.register(key => loaderSettings[key], {name: 'getLoaderSetting'});
     rpc.register((key, value) => {
         loaderSettings[key] = value;
@@ -569,12 +637,17 @@ export async function main({logEmitter, logFile, logQueue, sentryAnonId,
         menu.installTrayIcon();
         menu.setAppMenu();
     }
-    let updater;
+    let maybeUpdateAndRestart = () => undefined;
     const lastVersion = sauceApp.getSetting('lastVersion');
     if (lastVersion !== pkg.version) {
+        const upChLevel = updateChannelLevels[sauceApp.getSetting('updateChannel')] || 0;
+        if (upChLevel < updateChannelLevels[defaultUpdateChannel]) {
+            sauceApp.setSetting('updateChannel', defaultUpdateChannel);
+            console.info("Update channel set to:", defaultUpdateChannel);
+        }
         if (!args.headless) {
             if (lastVersion) {
-                console.info("Sauce recently updated");
+                console.info(`Sauce was updated: ${lastVersion} -> ${pkg.version}`);
                 await electron.session.defaultSession.clearCache();
                 for (const {id} of windows.getProfiles()) {
                     await windows.loadSession(id).clearCache();
@@ -587,18 +660,48 @@ export async function main({logEmitter, logFile, logQueue, sentryAnonId,
         }
         sauceApp.setSetting('lastVersion', pkg.version);
     } else if (!isDEV) {
-        updater = sauceApp.checkForUpdates();
+        const updateCheck = sauceApp.checkForUpdates();
+        maybeUpdateAndRestart = async () => {
+            const updateInfo = await updateCheck;
+            if (updateInfo) {
+                await maybeDownloadAndInstallUpdate(updateInfo);
+            }
+        };
+    }
+    const isSauceProtoHandler = electron.app.setAsDefaultProtocolClient(sauceScheme);
+    if (!isSauceProtoHandler) {
+        console.error("Unable to register as protocol handler for:", sauceScheme);
+    } else {
+        electron.app.on('open-url', (ev, _url) => {
+            const url = new URL(_url);
+            if (url.protocol !== sauceScheme + ':') {
+                console.error("Unexpected protocol:", url.protocol);
+                return;
+            }
+            sauceApp.emit('external-open', {
+                name: url.host,
+                path: url.pathname,
+                data: Object.fromEntries(url.searchParams),
+            });
+        });
     }
     try {
         if (!await windows.eulaConsent()) {
             return quit();
         }
     } catch(e) {
-        await electron.dialog.showErrorBox('EULA or Patreon Link Error', '' + e);
+        console.error('Activation error:', e);
+        await electron.dialog.showErrorBox('Activation Error', '' + e);
+        await maybeUpdateAndRestart();
         return quit(1);
     }
+    const exclusions = await getExclusions();
+    zwiftAPI = new zwift.ZwiftAPI({exclusions});
+    global.zwiftAPI = zwiftAPI;  // devTool debug
+    zwiftMonitorAPI = new zwift.ZwiftAPI({exclusions});
     const mainUser = await zwiftAuthenticate({api: zwiftAPI, ident: 'zwift-login', ...args});
     if (!mainUser) {
+        await maybeUpdateAndRestart();
         return quit(1);
     }
     const monUser = await zwiftAuthenticate({
@@ -608,6 +711,7 @@ export async function main({logEmitter, logFile, logQueue, sentryAnonId,
         ...args
     });
     if (!monUser) {
+        await maybeUpdateAndRestart();
         return quit(1);
     }
     if (mainUser === monUser) {
@@ -626,10 +730,7 @@ export async function main({logEmitter, logFile, logQueue, sentryAnonId,
         await zwiftLogout(response === 0 ? 'main' : 'monitor');
         return restart();
     }
-    const updateInfo = await updater;
-    if (updateInfo && await maybeDownloadAndInstallUpdate(updateInfo)) {
-        return; // updated, will restart
-    }
+    await maybeUpdateAndRestart();
     for (const mod of mods.init()) {
         if (mod.isNew) {
             const enable = await windows.confirmDialog({
@@ -649,8 +750,8 @@ export async function main({logEmitter, logFile, logQueue, sentryAnonId,
             mods.setEnabled(mod.id, enable);
         }
     }
-    await sauceApp.start(args);
-    console.debug('Startup bench:', Date.now() - s);
+    await sauceApp.start({...args, exclusions});
+    console.debug(`Startup took ${Date.now() - s}ms`);
     if (!args.headless) {
         windows.openWidgetWindows();
         menu.updateTrayMenu();
@@ -660,9 +761,6 @@ export async function main({logEmitter, logFile, logQueue, sentryAnonId,
 
 // Dev tools prototyping
 global.zwift = zwift;
-global.zwiftAPI = zwiftAPI;
-global.zwiftMonitorAPI = zwiftMonitorAPI;
 global.windows = windows;
 global.electron = electron;
-global.report = report;
 global.mods = mods;

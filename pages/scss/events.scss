@@ -1,5 +1,6 @@
 @use 'color';
 @import 'profile_tpl';
+@import 'expandable-table';
 
 html {
     padding: 0;
@@ -56,6 +57,10 @@ table {
                 > * {
                     margin-left: 0.2em;
                 }
+
+                ms {
+                    margin: 0.1em 0 0 0.1em;
+                }
             }
         }
     }
@@ -79,78 +84,33 @@ table {
         }
     }
 
-    tbody tr {
-        transition: background 100ms;
-
-        &:hover {
-            background-color: #0355;
-        }
-    }
-
     &.expandable {
         > tbody > tr {
-            &:nth-child(4n - 1) {
-                background-color: #0001;
-
-                &:hover {
-                    background-color: #0354;
-                }
+            &.summary > td {
+                white-space: nowrap;
+                text-overflow: ellipsis;
+                overflow: hidden;
             }
 
-            &:nth-child(2n - 1) {
-                &:not(.expanded) + tr {
-                    display: none;
-                }
-            }
+            &.details .container {
+                background-color: color.shade(intrinsic-inverted, 0%, 0.1);
+                padding: 1.5em;
+                border-radius: 0.28em;
+                box-shadow: 1px 1px 5px #0003;
 
-            &.summary {
-                cursor: pointer;
+                &:empty {
+                    min-height: 5em;
 
-                > td {
-                    white-space: nowrap;
-                    text-overflow: ellipsis;
-                    overflow: hidden;
+                    &::after {
+                        font-size: 2em;
+                        content: 'Loading...'
+                    }
                 }
             }
 
             &.expanded,
-            &.details {
-                background-color: color.shade(bg2, 20%, 10%) !important;
-            }
-
-            &.expanded {
-                border-top: 0.2em solid color.shade(fg, 10%, 50%);
-
-                > td {
-                    padding-top: 1em;
-                    padding-bottom: 0.5em;
-                    font-weight: bold;
-                }
-            }
-
-            &.details {
-                border-bottom: 0.2em solid color.shade(fg, 10%, 50%);
-
-                > td {
-                    padding-top: 0.5em;
-                    padding-bottom: 1em;
-
-                    > .container {
-                        background-color: color.shade(bg2, 60%, 10%);
-                        padding: 1.5em;
-                        border-radius: 0.28em;
-                        box-shadow: 1px 1px 5px #0003;
-
-                        &:empty {
-                            min-height: 5em;
-
-                            &::after {
-                                font-size: 2em;
-                                content: 'Loading...'
-                            }
-                        }
-                    }
-                }
+            &.expanded + tr.details {
+                background-color: color.shade(primary, 3%, 0.8);
             }
         }
     }
@@ -163,9 +123,6 @@ table {
         .desc {
             white-space: pre-line;
         }
-    }
-
-    .badge {
     }
 
     .subgroups {
@@ -182,8 +139,8 @@ table {
                 align-items: center;
 
                 .badge {
-                    font-size: 1.4em;
-                    margin-right: 0.3em;
+                    font-size: 1.065em;
+                    margin-right: 0.35em;
                     align-self: flex-start;
                 }
 

@@ -1,6 +1,8 @@
 import * as sauce from '../../shared/sauce/index.mjs';
 import * as common from './common.mjs';
 
+common.enableSentry();
+
 const doc = document.documentElement;
 const L = sauce.locale;
 const H = L.human;
@@ -17,6 +19,8 @@ let table;
 let tbody;
 let theadRow;
 let gameConnection;
+let filters = [];
+const filtersRaw = common.settingsStore.get('filtersRaw');
 
 common.settingsStore.setDefault({
     autoscroll: true,
@@ -33,7 +37,7 @@ const weightClass = v => H.weightClass(v, {suffix: true, html: true});
 const pwr = v => H.power(v, {suffix: true, html: true});
 const hr = v => H.number(v || null, {suffix: 'bpm', html: true});
 const kj = (v, options) => H.number(v, {suffix: 'kJ', html: true, ...options});
-const pct = (v, options) => H.number(v, {suffix: '%', html: true, ...options});
+const pct = (v, options) => H.number(v * 100, {suffix: '%', html: true, ...options});
 const gapTime = (v, entry) => H.timer(v) + (entry.isGapEst ? '<small> (est)</small>' : '');
 
 let overlayMode;
@@ -142,11 +146,11 @@ function fmtEvent(sgid) {
 }
 
 
-function getRoute({state}) {
+function getRoute({state, routeId}) {
     if (state.eventSubgroupId) {
         const sg = lazyGetSubgroup(state.eventSubgroupId);
         if (sg) {
-            return {route: sg.route, laps: sg.laps};
+            return {route: lazyGetRoute(sg.routeId), laps: sg.laps};
         }
     } else if (state.routeId) {
         return {route: lazyGetRoute(state.routeId), laps: 0};
@@ -172,8 +176,8 @@ function clearSelection() {
 function athleteLink(id, content, options={}) {
     const debug = location.search.includes('debug') ? '&debug' : '';
     return `<a title="${options.title || ''}" class="athlete-link ${options.class || ''}"
-               href="profile.html?id=${id}&width=800&height=345${debug}"
-               target="_blank">${content || ''}</a>`;
+               href="profile.html?id=${id}&windowType=profile${debug}"
+               target="profile_popup_${id}">${content || ''}</a>`;
 }
 
 
@@ -183,11 +187,19 @@ function fmtAvatar(name, {athlete, athleteId}) {
 }
 
 
-function fmtActions() {
-    return `<a class="link" data-id="watch"
-               title="Watch this athlete"><ms>video_camera_front</ms></a>`;
+function fmtActions(obj) {
+    return [
+        `<a class="link" target="watching_popup_${obj.athleteId}"
+            href="watching.html?windowId=watching-link-popup&windowType=watching&id=${obj.athleteId}"
+            title="Load Watching window for this athlete"><ms>live_tv</ms></a>`,
+        `<a class="link" target="analysis_popup_${obj.athleteId}"
+            href="analysis.html?windowId=analysis-link-popup&windowType=analysis&id=${obj.athleteId}"
+            title="Load Analysis window for this athlete's session"><ms>monitoring</ms></a>`,
+        `<a class="link" data-id="watch" title="Watch this athlete"><ms>video_camera_front</ms></a>`,
+    ].join(' ');
 }
 
+const tpAttr = common.stripHTML(common.attributions.tp);
 
 const fieldGroups = [{
     group: 'athlete',
@@ -196,6 +208,8 @@ const fieldGroups = [{
         {id: 'actions', defaultEn: false, label: 'Action Button(s)', headerLabel: ' ', fmt: fmtActions},
         {id: 'avatar', defaultEn: true, label: 'Avatar', headerLabel: '<ms>account_circle</ms>',
          get: x => x.athlete && x.athlete.sanitizedFullname, fmt: fmtAvatar},
+        {id: 'female', defaultEn: false, label: 'Female', headerLabel: '<ms>female</ms>',
+         get: x => x.athlete?.gender === 'female', fmt: x => x ? '<ms title="Female">female</ms>' : ''},
         {id: 'nation', defaultEn: true, label: 'Country Flag', headerLabel: '<ms>flag</ms>',
          get: x => x.athlete && x.athlete.countryCode, fmt: common.fmtFlag},
         {id: 'name', defaultEn: true, label: 'Name', get: x => x.athlete && x.athlete.sanitizedFullname,
@@ -214,11 +228,11 @@ const fieldGroups = [{
          fmt: x => x ? pwr(x) : '-', tooltip: 'Functional Threshold Power'},
         {id: 'cp', defaultEn: false, label: 'CP', get: x => x.athlete && x.athlete.cp,
          fmt: x => x ? pwr(x) : '-', tooltip: 'Critical Power'},
-        {id: 'tss', defaultEn: false, label: 'TSS', get: x => x.stats.power.tss, fmt: H.number,
-         tooltip: 'Training Stress Score'},
-        {id: 'intensity-factor', defaultEn: false, label: 'Intensity Factor', headerLabel: 'IF',
-         tootltip: 'Normalized Power / FTP: A value of 100% means NP = FTP', get: x => x.stats.power.np,
-         fmt: (x, entry) => pct(x / (entry.athlete && entry.athlete.ftp) * 100)},
+        {id: 'tss', defaultEn: false, label: 'TSS®', get: x => x.stats.power.tss, fmt: H.number,
+         tooltip: tpAttr},
+        {id: 'intensity-factor', defaultEn: false, label: 'Intensity Factor®', headerLabel: 'IF®',
+         get: x => x.stats.power.np, fmt: (x, entry) => pct(x / (entry.athlete && entry.athlete.ftp)),
+         tooltip: 'NP® / FTP: A value of 100% means NP® = FTP\n\n' + tpAttr},
         {id: 'distance', defaultEn: false, label: 'Distance', headerLabel: 'Dist',
          get: x => x.state.distance, fmt: fmtDist},
         {id: 'event-distance', defaultEn: false, label: 'Event Distance', headerLabel: 'Ev Dist',
@@ -226,7 +240,7 @@ const fieldGroups = [{
         {id: 'rideons', defaultEn: false, label: 'Ride Ons', headerLabel: '<ms>thumb_up</ms>',
          get: x => x.state.rideons, fmt: H.number},
         {id: 'kj', defaultEn: false, label: 'Energy (kJ)', headerLabel: 'kJ', get: x => x.state.kj, fmt: kj},
-        {id: 'wprimebal', defaultEn: false, label: 'W\'bal', get: x => x.stats.power.wBal,
+        {id: 'wprimebal', defaultEn: false, label: 'W\'bal', get: x => x.wBal,
          tooltip: "W' and W'bal represent time above threshold and remaining energy respectively.\n" +
          "Think of the W'bal value as the amount of energy in a battery.",
          fmt: (x, entry) => (x != null && entry.athlete && entry.athlete.wPrime) ?
@@ -258,12 +272,12 @@ const fieldGroups = [{
         {id: 'route', defaultEn: false, label: 'Route', headerLabel: '<ms>route</ms>',
          get: getRoute, fmt: fmtRoute},
         {id: 'progress', defaultEn: false, label: 'Route %', headerLabel: 'RT %',
-         get: x => x.state.progress * 100, fmt: pct},
+         get: x => x.state.progress, fmt: pct},
         {id: 'workout-zone', defaultEn: false, label: 'Workout Zone', headerLabel: 'Zone',
          get: x => x.state.workoutZone, fmt: x => x || '-'},
         {id: 'road', defaultEn: false, label: 'Road ID', get: x => x.state.roadId},
         {id: 'roadcom', defaultEn: false, label: 'Road Completion', headerLabel: 'Road %',
-         get: x => x.state.roadCompletion / 10000, fmt: pct},
+         get: x => x.state.roadCompletion / 1e6, fmt: pct},
     ],
 }, {
     group: 'power',
@@ -297,13 +311,14 @@ const fieldGroups = [{
          get: x => x.stats.power.avg, fmt: pwr},
         {id: 'wkg-avg', defaultEn: false, label: 'Total W/kg Average', headerLabel: 'W/kg (avg)',
          get: x => x.stats.power.avg, fmt: fmtWkg},
-        {id: 'pwr-np', defaultEn: true, label: 'NP', headerLabel: 'NP',
-         get: x => x.stats.power.np, fmt: pwr},
-        {id: 'wkg-np', defaultEn: false, label: 'NP (w/kg)', headerLabel: 'NP (w/kg)',
-         get: x => x.stats.power.np, fmt: fmtWkg},
+        {id: 'pwr-np', defaultEn: true, label: 'NP®', headerLabel: 'NP®',
+         get: x => x.stats.power.np, fmt: pwr, tooltip: tpAttr},
+        {id: 'wkg-np', defaultEn: false, label: 'NP® (w/kg)', headerLabel: 'NP® (w/kg)',
+         get: x => x.stats.power.np, fmt: fmtWkg, tooltip: tpAttr},
         {id: 'pwr-vi', defaultEn: true, label: 'Variability Index', headerLabel: 'VI',
-         get: x => x.stats.power.np / x.stats.power.avg, tooltip: 'NP / Avg-Power',
-         fmt: x => H.number(x, {precision: 2, fixed: true})},
+         get: x => x.stats.power.np / x.stats.power.avg, fmt: x => H.number(x, {precision: 2, fixed: true}),
+         tooltip: 'NP® / Average-power.  A value of 1.0 means the effort is very smooth, higher ' +
+                  'values indicate the effort was more volatile.\n\n' + tpAttr},
         {id: 'power-lap', defaultEn: false, label: 'Lap Average', headerLabel: 'Pwr (lap)',
          get: x => x.lap.power.avg, fmt: pwr},
         {id: 'wkg-lap', defaultEn: false, label: 'Lap W/kg Average', headerLabel: 'W/kg (lap)',
@@ -369,6 +384,8 @@ const fieldGroups = [{
          get: x => x.lap.draft.avg, fmt: pwr},
         {id: 'draft-last-lap', defaultEn: false, label: 'Last Lap Average', headerLabel: 'Draft (last)',
          get: x => x.lastLap ? x.lastLap.draft.avg : null, fmt: pwr},
+        {id: 'draft-energy', defaultEn: false, label: 'Draft (kJ)', get: x => x.stats.draft.kj, fmt: kj,
+         tooltip: 'Energy saved by drafting'},
     ],
 
 }, {
@@ -422,8 +439,27 @@ const fieldGroups = [{
          get: x => x.eventLeader, fmt: x => x ? '<ms style="color: gold">star</ms>' : ''},
         {id: 'event-sweeper', defaultEn: false, label: 'Event Sweeper', headerLabel: '<ms>mop</ms>',
          get: x => x.eventSweeper, fmt: x => x ? '<ms style="color: darkred">mop</ms>' : ''},
+        {id: 'route-progress', defaultEn: false, label: 'Route Progress', get: x => x.state.routeProgress},
+        {id: 'route-road-index', defaultEn: false, label: 'Route Road Index',
+         get: x => x.state.routeRoadIndex},
     ],
 }];
+
+
+function onFilterInput(ev) {
+    const f = ev.currentTarget.value;
+    filters = parseFilters(f);
+    renderData(nearbyData);
+    common.settingsStore.set('filtersRaw', f);
+}
+
+
+function parseFilters(raw) {
+    return raw.split('|').filter(x => x.length).map(x => {
+        const lc = x.toLowerCase();
+        return new RegExp(x, lc === x ? 'i' : '');
+    });
+}
 
 
 export async function main() {
@@ -431,6 +467,7 @@ export async function main() {
     common.initNationFlags();  // bg okay
     let onlyMarked = common.settingsStore.get('onlyMarked');
     let onlySameCategory= common.settingsStore.get('onlySameCategory');
+    let maxGap = common.settingsStore.get('maxGap');
     let refresh;
     const setRefresh = () => {
         refresh = (common.settingsStore.get('refreshInterval') || 0) * 1000 - 100; // within 100ms is fine.
@@ -445,8 +482,9 @@ export async function main() {
     common.settingsStore.addEventListener('changed', async ev => {
         const changed = ev.data.changed;
         if (window.isElectron && changed.has('overlayMode')) {
-            await common.rpc.updateWindow(window.electron.context.id, {overlay: changed.get('overlayMode')});
-            await common.rpc.reopenWindow(window.electron.context.id);
+            await common.rpc.updateWidgetWindowSpec(window.electron.context.id,
+                                                    {overlay: changed.get('overlayMode')});
+            await common.rpc.reopenWidgetWindow(window.electron.context.id);
         }
         if (changed.has('refreshInterval')) {
             setRefresh();
@@ -456,6 +494,9 @@ export async function main() {
         }
         if (changed.has('onlySameCategory')) {
             onlySameCategory = changed.get('onlySameCategory');
+        }
+        if (changed.has('maxGap')) {
+            maxGap = changed.get('maxGap');
         }
         setBackground();
         render();
@@ -527,6 +568,12 @@ export async function main() {
             }
         }
     });
+    const filterInput = document.querySelector('input[name="filter"]');
+    if (filtersRaw) {
+        filterInput.value = filtersRaw;
+        filters = parseFilters(filtersRaw);
+    }
+    filterInput.addEventListener('input', onFilterInput);
     setRefresh();
     let lastRefresh = 0;
     common.subscribe('nearby', data => {
@@ -539,6 +586,9 @@ export async function main() {
             if (sgid) {
                 data = data.filter(x => x.state.eventSubgroupId === sgid);
             }
+        }
+        if (maxGap) {
+            data = data.filter(x => Math.abs(x.gap) <= maxGap);
         }
         nearbyData = data;
         const elapsed = Date.now() - lastRefresh;
@@ -622,6 +672,7 @@ function updateTableRow(row, info) {
         row.dataset.id = info.athleteId;
     }
     const tds = row.querySelectorAll('td');
+    let unfiltered = !filters.length;
     for (const [i, {id, get, fmt}] of enFields.entries()) {
         let value;
         try {
@@ -634,9 +685,19 @@ function updateTableRow(row, info) {
         if (td._html !== html) {
             td.innerHTML = (td._html = html);
         }
+        if (!unfiltered) {
+            unfiltered = filters.some(x => !!td.textContent.match(x));
+        }
         gentleClassToggle(td, 'sorted', sortBy === id);
     }
     gentleClassToggle(row, 'hidden', false);
+    gentleClassToggle(row, 'filtered', !unfiltered);
+}
+
+
+function disableRow(row) {
+    gentleClassToggle(row, 'hidden', true);
+    gentleClassToggle(row, 'filtered', false);
 }
 
 
@@ -679,7 +740,7 @@ function renderData(data, {recenter}={}) {
         }
     }
     while (row.previousElementSibling) {
-        gentleClassToggle(row = row.previousElementSibling, 'hidden', true);
+        disableRow(row = row.previousElementSibling);
     }
     row = watchingRow;
     for (let i = centerIdx + 1; i < data.length; i++) {
@@ -687,7 +748,7 @@ function renderData(data, {recenter}={}) {
         updateTableRow(row, data[i]);
     }
     while (row.nextElementSibling) {
-        gentleClassToggle(row = row.nextElementSibling, 'hidden', true);
+        disableRow(row = row.nextElementSibling);
     }
     if ((!frames++ || recenter) && common.settingsStore.get('autoscroll')) {
         requestAnimationFrame(() => {

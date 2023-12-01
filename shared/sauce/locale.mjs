@@ -11,9 +11,9 @@ export function isImperial() {
 }
 
 
-export const metersPerMile = 1609.344;
-export const metersPerFoot = 0.3048;
-export const kgsPerLbs = 2.20462;
+export const milesPerKm = 1000 / 1609.344;
+export const feetPerMeter = 1 / 0.3048;
+export const poundsPerKg = 2.20462;
 
 const hdUnits = {
     year: 'year',
@@ -84,7 +84,7 @@ function humanDuration(elapsed, options={}) {
         }
     }
     if (stack.length) {
-        return sign + stack.join(options.seperator || ', ');
+        return sign + stack.join(options.separator || ', ');
     } else {
         return '-';
     }
@@ -163,11 +163,24 @@ function humanTime(date, options={}) {
         return humanEmpty;
     }
     const style = options.style || 'default';
-    return _intlTimeFormats[style].format(date);
+    if (options.parts) {
+        return _intlTimeFormats[style].formatToParts(date);
+    } else if (!options.html) {
+        return _intlTimeFormats[style].format(date);
+    } else {
+        return partsToHTML(_intlTimeFormats[style].formatToParts(date).map(x => ({
+            ...x,
+            type: {literal: 'seperator', dayPeriod: 'unit'}[x.type] || 'value',
+            name: x.type,
+        })));
+    }
 }
 
 
 function humanTimer(elapsed, options={}) {
+    if (options.suffixOnly) {
+        return _realNumber(elapsed) && options.suffix || '';
+    }
     if (!_realNumber(elapsed)) {
         return humanEmpty;
     }
@@ -182,15 +195,47 @@ function humanTimer(elapsed, options={}) {
     }
     const hours = elapsed / 3600 | 0;
     const mins = elapsed % 3600 / 60 | 0;
-    const secsStr = (elapsed % 60 | 0).toString();
-    const msStr = options.ms ? '.' + Math.round(elapsed % 1 * 1000).toString().padStart(3, '0') : '';
-    if (hours) {
-        return `${sign}${hours}:${mins.toString().padStart(2, '0')}:${secsStr.padStart(2, '0')}${msStr}`;
-    } else if (mins || options.long) {
-        return `${sign}${mins}:${secsStr.padStart(2, '0')}${msStr}`;
-    } else {
-        return `${sign}${secsStr}${msStr}`;
+    const parts = [{type: 'value', name: 'sign', value: sign}];
+    switch (true) {
+        case !!(hours || options.full):
+            parts.push({type: 'value', name: 'hours', value: hours.toString()},
+                       {type: 'seperator', name: 'hours', value: ':'});
+            // falls through
+        case !!(mins || options.long || options.full):
+            parts.push({type: 'value', name: 'minutes', value: mins.toString().padStart(2, '0')},
+                       {type: 'seperator', name: 'minutes', value: ':'});
+            // falls through
+        default: {
+            const s = (elapsed % 60 | 0).toString();
+            parts.push({type: 'value', name: 'seconds', value: parts.length > 1 ? s.padStart(2, '0') : s});
+        }
     }
+    if (options.ms) {
+        const value = Math.round(elapsed % 1 * 1000).toString().padStart(3, '0');
+        parts.push({type: 'seperator', name: 'milliseconds', value: '.'},
+                   {type: 'value', name: 'milliseconds', value});
+    }
+    if (options.suffix) {
+        if (options.separator) {
+            parts.push({type: 'seperator', name: 'suffix', value: options.separator});
+        }
+        parts.push({type: 'unit', name: 'suffix', value: options.suffix});
+    }
+    if (options.parts) {
+        return parts;
+    } else if (options.html) {
+        return partsToHTML(parts);
+    } else {
+        return parts.map(x => x.value).join('');
+    }
+}
+
+
+function partsToHTML(parts) {
+    const tags = {value: 'span', seperator: 'span', unit: 'abbr'};
+    const inner = parts.map(x =>
+        `<${tags[x.type]} class="${x.type} ${x.name}">${x.value}</${tags[x.type]}>`).join('');
+    return `<localized style="display: contents">${inner}</localized>`;
 }
 
 
@@ -254,7 +299,7 @@ function _humanNumber(value, options) {
         maximumFractionDigits: p,
         minimumFractionDigits: options.fixed ? p : undefined,
     });
-    const sep = options.suffix && options.seperator || '';
+    const sep = options.suffix && options.separator || '';
     const suffix = options.suffix ?
         options.html ? `<abbr class="unit">${options.suffix}</abbr>` : options.suffix :
         '';
@@ -271,7 +316,7 @@ function humanNumber(value, options={}) {
     const t = typeof value;
     // Improve LRU hit rate..
     const sv = (t === 'number' && !p) ? Math.round(value) : value;
-    const sig = `${t} ${sv} ${p} ${options.fixed} ${options.suffix} ${options.html} ${options.seperator}`;
+    const sig = `${t} ${sv} ${p} ${options.fixed} ${options.suffix} ${options.html} ${options.separator}`;
     let r = _hnLRU.get(sig);
     if (r === undefined) {
         r = _humanNumber(value, options);
@@ -301,21 +346,23 @@ function humanPace(kph, options={}) {
     const sport = options.sport || 'cycling';
     let fixed;
     let value;
+    let humanFunc = humanNumber;
     if (_realNumber(kph)) {
         if (sport === 'running') {
             if (options.suffix === true || options.suffixOnly) {
                 options.suffix = imperial ? '/mi' : '/km';
             }
-            value = 3600 / (imperial ? kph * 1000 / metersPerMile : kph);
+            value = 3600 / (imperial ? kph * milesPerKm : kph);
+            humanFunc = humanTimer;
         } else {
             if (options.suffix === true || options.suffixOnly) {
                 options.suffix = imperial ? 'mph' : 'kph';
             }
             fixed = true;
-            value = imperial ? kph * 1000 / metersPerMile : kph;
+            value = imperial ? kph * milesPerKm : kph;
         }
     }
-    return humanNumber(value, {fixed, ...options});
+    return humanFunc(value, {fixed, ...options});
 }
 
 
@@ -328,13 +375,13 @@ function humanDistance(m, options={}) {
                 options.suffix = imperial ? 'ft' : 'm';
             }
             precision = 0;
-            value = imperial ? m / metersPerFoot : m;
+            value = imperial ? m * feetPerMeter : m;
         } else {
             if (options.suffix === true || options.suffixOnly) {
                 options.suffix = imperial ? 'mi' : 'km';
             }
             precision = 1;
-            value = imperial ? m / metersPerMile : m / 1000;
+            value = imperial ? m / 1000 * milesPerKm : m / 1000;
         }
     } else {
         value = NaN;
@@ -347,7 +394,7 @@ function humanWeight(kg, options={}) {
     if (options.suffix === true || options.suffixOnly) {
         options.suffix = imperial ? 'lbs' : 'kg';
     }
-    const value = _realNumber(kg) ? imperial ? kg * kgsPerLbs : kg : NaN;
+    const value = _realNumber(kg) ? imperial ? kg * poundsPerKg : kg : NaN;
     return humanNumber(value, {precision: 1, ...options});
 }
 
@@ -358,13 +405,13 @@ function humanWeightClass(kg, options={}) {
     }
     if (_realNumber(kg)) {
         const range = imperial ? 20 : 10;
-        const v = imperial ? kg * kgsPerLbs : kg;
+        const v = imperial ? kg * poundsPerKg : kg;
         const vOfRange = v / range;
         const lower = Math.floor(vOfRange) * range;
         const upper = (vOfRange % 1) ? Math.ceil(vOfRange) * range : (vOfRange + 1) * range;
         const span = options.html ?
-            '<abbr class="unit" style="padding: 0; margin: 0 0.12em;">⭤</abbr>' :
-            '⭤';
+            '<abbr class="unit" style="padding: 0; margin: 0 0.12em;">↔</abbr>' :
+            '↔';
         return `${humanNumber(lower)}${span}${humanNumber(upper, options)}`;
     } else {
         return humanNumber(NaN, options);
@@ -392,7 +439,7 @@ function humanElevation(m, options={}) {
     if (options.suffix === true || options.suffixOnly) {
         options.suffix = imperial ? 'ft' : 'm';
     }
-    return humanNumber(_realNumber(m) ? imperial ? m * metersPerFoot : m : NaN, options);
+    return humanNumber(_realNumber(m) ? imperial ? m * feetPerMeter : m : NaN, options);
 }
 
 
@@ -408,26 +455,6 @@ function humanPlace(p, options={}) {
         options.suffix = placeSuffixes[placePluralRules.select(p)];
     }
     return humanNumber(p, options);
-}
-
-
-export function weightUnconvert(localeWeight) {
-    return imperial ? localeWeight / kgsPerLbs : localeWeight;
-}
-
-
-export function elevationUnconvert(localeEl) {
-    return imperial ? localeEl * metersPerFoot : localeEl;
-}
-
-
-export function velocityUnconvert(localeV, options={}) {
-    throw new Error("TBD");
-}
-
-
-export function distanceUnconvert(localeDist) {
-    return imperial ? localeDist * metersPerMile : localeDist * 1000;
 }
 
 

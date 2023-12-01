@@ -102,7 +102,7 @@ function rankWeightedRatio(duration) {
 }
 
 
-export function rankLevel(duration, p, wp, weight, gender) {
+export function rankLevel(duration, p, wp, weight, gender='male', options) {
     const high = _rankScaler(duration, rankConstants[gender].high);
     const low = _rankScaler(duration, rankConstants[gender].low);
     const weightedRatio = (!wp || wp < p) ? 0 : rankWeightedRatio(duration);
@@ -113,13 +113,13 @@ export function rankLevel(duration, p, wp, weight, gender) {
         weightedRatio,
         weightedPower,
         wKg,
+        ...options,
     };
 }
 
 
-export function rankBadge({level, weightedRatio, weightedPower, wKg}) {
-    const suffix = (document.documentElement.classList.contains('sauce-theme-dark')) ?
-        '-darkbg.png' : '.png';
+export function rankBadge({level, weightedRatio, weightedPower, wKg, darkMode}) {
+    const suffix = darkMode ? '-darkbg.png' : '.png';
     let lastRankLevel = 1;
     for (const x of rankLevels) {
         if (level >= x.levelRequirement) {
@@ -146,8 +146,8 @@ export function rankBadge({level, weightedRatio, weightedPower, wKg}) {
 }
 
 
-export function rank(duration, p, wp, weight, gender) {
-    return rankBadge(rankLevel(duration, p, wp, weight, gender));
+export function rank(duration, p, wp, weight, gender, options) {
+    return rankBadge(rankLevel(duration, p, wp, weight, gender, options));
 }
 
 
@@ -776,6 +776,9 @@ export function calcWPrimeBalDifferential(wattsStream, timeStream, cp, wPrime) {
         } else {
             const pNum = p || 0;  // convert null and undefined to 0.
             wBal += pNum < cp ? (cp - pNum) * (wPrime - wBal) / wPrime : cp - pNum;
+            if (wBal > wPrime) {
+                wBal = wPrime;
+            }
         }
         if (!(p instanceof sauce.data.Pad)) {
             // Our output stream should align with the input stream, not the corrected
@@ -788,11 +791,11 @@ export function calcWPrimeBalDifferential(wattsStream, timeStream, cp, wPrime) {
 
 
 export function makeIncWPrimeBalDifferential(cp, wPrime) {
-    const epsilon = 0.000001;
     let wBal = wPrime;
-    return p => {
+    return (p, elapsed=1) => {
         if (p instanceof sauce.data.Break) {
             // Refill wBal while we have a break.
+            const epsilon = 0.000001;
             for (let j = 0; j < p.pad; j++) {
                 wBal += cp * (wPrime - wBal) / wPrime;
                 if (wBal >= wPrime - epsilon) {
@@ -801,8 +804,11 @@ export function makeIncWPrimeBalDifferential(cp, wPrime) {
                 }
             }
         } else {
-            const pNum = p || 0;  // convert null and undefined to 0.
-            wBal += pNum < cp ? (cp - pNum) * (wPrime - wBal) / wPrime : cp - pNum;
+            const cpDelta = (cp - (p || 0)) * elapsed;
+            wBal += cpDelta > 0 ? cpDelta * (wPrime - wBal) / wPrime : cpDelta;
+            if (wBal > wPrime) {
+                wBal = wPrime;
+            }
         }
         return wBal;
     };

@@ -1,9 +1,11 @@
-import * as sauce from '../../shared/sauce/index.mjs';
+import * as locale from '../../shared/sauce/locale.mjs'
 import * as common from './common.mjs';
 import * as fields from './fields.mjs';
 
+common.enableSentry();
+
 const doc = document.documentElement;
-const L = sauce.locale;
+const L = locale;
 const H = L.human;
 let imperial = !!common.storage.get('/imperialUnits');
 L.setImperial(imperial);
@@ -16,26 +18,22 @@ common.settingsStore.setDefault({
     centerGapSize: 0,
 });
 
-
-const _events = new Map();
-function getEventSubgroup(id) {
-    if (!_events.has(id)) {
-        _events.set(id, null);
-        common.rpc.getEventSubgroup(id).then(x => {
-            if (x) {
-                _events.set(id, x);
-            } else {
-                // leave it null but allow retry later
-                setTimeout(() => _events.delete(id), 30000);
-            }
-        });
+function updateButtonVis() {
+    const settings = common.settingsStore.get();
+    for (const x of ['Analysis', 'Athletes', 'Events']) {
+        const btn = document.querySelector(`.controls .button[data-settings-key="${x}"]`);
+        if (!btn) {
+            console.error('Invalid button:', x);
+            continue;
+        }
+        btn.classList.toggle('hidden', settings[`hide${x}Button`] === true);
     }
-    return _events.get(id);
 }
 
 
 export function main() {
     common.initInteractionListeners();
+    updateButtonVis();
     let autoHidden;
     let lastData;
     let autoHideTimeout;
@@ -52,9 +50,11 @@ export function main() {
                 location.reload();  // Avoid state machine complications.
                 return;
             } else if (k === 'centerGapSize') {
-                console.log("set gap", v);
                 doc.style.setProperty('--center-gap-size', `${v}px`);
                 renderer.render({force: true});
+                return;
+            } else if (k.match(/hide.+Button/)) {
+                updateButtonVis();
                 return;
             }
         }
@@ -67,35 +67,45 @@ export function main() {
         renderer.render();
     });
     document.querySelector('.button.show').addEventListener('click', () => {
-        doc.classList.remove('hidden');
+        doc.classList.remove('windows-hidden');
         if (window.isElectron) {
-            doc.classList.remove('auto-hidden');
+            doc.classList.remove('windows-auto-hidden');
+            console.debug("User requested show windows");
             autoHidden = false;
             common.rpc.showAllWindows();
         }
     });
     document.querySelector('.button.hide').addEventListener('click', () => {
-        doc.classList.add('hidden');
+        doc.classList.add('windows-hidden');
         if (window.isElectron) {
-            doc.classList.remove('auto-hidden');
+            doc.classList.remove('windows-auto-hidden');
+            console.debug("User requested hide windows");
             autoHidden = false;
             common.rpc.hideAllWindows();
         }
     });
     if (window.isElectron) {
-        document.querySelector('.button.quit').addEventListener('click', () => common.rpc.quit());
+        document.querySelector('.button.quit').addEventListener('click', () => {
+            if (confirm("Quit Sauce?")) {
+                common.rpc.quit();
+            }
+        });
     }
 
     function autoHide() {
+        if (doc.classList.contains('windows-hidden')) {
+            console.debug("Skip auto hide: hidden already");
+            return;
+        }
         autoHidden = true;
-        doc.classList.add('auto-hidden', 'hidden');
+        doc.classList.add('windows-auto-hidden', 'windows-hidden');
         console.debug("Auto hidding windows");
         common.rpc.hideAllWindows({autoHide: true});
     }
 
     function autoShow() {
         autoHidden = false;
-        doc.classList.remove('auto-hidden', 'hidden');
+        doc.classList.remove('windows-auto-hidden', 'windows-hidden');
         console.debug("Auto showing windows");
         common.rpc.showAllWindows({autoHide: true});
     }
@@ -106,18 +116,16 @@ export function main() {
     }
     let lastUpdate = 0;
     common.subscribe('athlete/watching', watching => {
-        if (window.isElectron && common.settingsStore.get('autoHideWindows') &&
-            (watching.state.speed || watching.state.cadence || watching.state.power)) {
-            clearTimeout(autoHideTimeout);
-            if (autoHidden) {
-                autoShow();
+        if (window.isElectron && common.settingsStore.get('autoHideWindows')) {
+            if (watching.state.speed || watching.state.cadence || watching.state.power) {
+                clearTimeout(autoHideTimeout);
+                if (autoHidden) {
+                    autoShow();
+                }
+                autoHideTimeout = setTimeout(autoHide, autoHideWait);
             }
-            autoHideTimeout = setTimeout(autoHide, autoHideWait);
         }
         lastData = watching;
-        if (watching.state.eventSubgroupId) {
-            watching.eventSubgroup = getEventSubgroup(watching.state.eventSubgroupId);
-        }
         renderer.setData(watching);
         const ts = Date.now();
         if (ts - lastUpdate > 500) {
@@ -212,7 +220,7 @@ async function renderAvailableMods() {
                     <label class="enabled">
                         Enabled
                         <input type="checkbox" ${enabled ? 'checked' : ''}/>
-                        <span class="restart-required">Restart Required</span>
+                        <span class="restart-required"></span>
                     </label>
                 </div>
                 <div class="info">${common.stripHTML(manifest.description)}</div>
@@ -239,16 +247,15 @@ async function renderAvailableMods() {
         }
         const enabled = label.querySelector('input').checked;
         const id = ids[ev.target.closest('.mod[data-id]').dataset.id];
+        label.classList.add('edited');
         await common.rpc.setModEnabled(id, enabled);
-        label.querySelector('.restart-required').style.display = 'initial';
     });
 }
 
 
 async function renderWindows(wins) {
-    console.log(wins);
     const windows = (await common.rpc.getWidgetWindowSpecs()).filter(x => !x.private);
-    const manifests = await common.rpc.getWindowManifests();
+    const manifests = await common.rpc.getWidgetWindowManifests();
     const el = document.querySelector('#windows');
     const descs = Object.fromEntries(manifests.map(x => [x.type, x]));
     windows.sort((a, b) => !!a.closed - !!b.closed);
@@ -313,22 +320,22 @@ async function frank() {
         bubble.remove();
         aud.remove();
     }, 110 * 1000);
-    await sauce.sleep(12000);
+    await common.sleep(12000);
     words.textContent = 'Let us celebrate this joyous occasion with my favorite song!';
-    await sauce.sleep(19000);
+    await common.sleep(19000);
     words.textContent = 'Now we Disco!';
-    await sauce.sleep(2800);
+    await common.sleep(2800);
     let discos = 1;
     while (active) {
         words.textContent = '';
-        await sauce.sleep(60);
+        await common.sleep(60);
         if (discos++ > 10) {
             discos = 1;
         }
         for (let i = 0; i < discos; i++) {
             words.textContent += ' DISCO! ';
         }
-        await sauce.sleep(400);
+        await common.sleep(400);
     }
 }
 
@@ -348,18 +355,22 @@ async function initWindowsPanel() {
         }
         const id = ev.target.closest('[data-id]').dataset.id;
         if (link.classList.contains('win-restore')) {
-            await common.rpc.openWindow(id);
+            await common.rpc.openWidgetWindow(id);
         } else if (link.classList.contains('profile-select')) {
             await common.rpc.activateProfile(id);
             await renderProfiles();
             await renderWindows();
         } else if (link.classList.contains('win-delete')) {
-            await common.rpc.removeWindow(id);
+            if (confirm('Delete this window and its settings?')) {
+                await common.rpc.removeWidgetWindow(id);
+            }
         } else if (link.classList.contains('profile-delete')) {
-            await common.rpc.removeProfile(id).catch(e => alert(`Remove Error\n\n${e.message}`));
-            await renderProfiles();
+            if (confirm('Delete this profile and all its windows?')) {
+                await common.rpc.removeProfile(id).catch(e => alert(`Remove Error...\n\n${e.message}`));
+                await renderProfiles();
+            }
         } else if (link.classList.contains('profile-clone')) {
-            await common.rpc.cloneProfile(id).catch(e => alert(`Clone Error\n\n${e.message}`));
+            await common.rpc.cloneProfile(id).catch(e => alert(`Clone Error...\n\n${e.message}`));
             await renderProfiles();
         } else if (link.classList.contains('profile-export')) {
             const data = await common.rpc.exportProfile(id);
@@ -391,7 +402,7 @@ async function initWindowsPanel() {
                 }
                 actionTaken = true;
                 const customName = common.sanitize(input.value);
-                await common.rpc.updateWindow(id, {customName});
+                await common.rpc.updateWidgetWindowSpec(id, {customName});
                 await renderWindows();
                 if (customName.match(/frank/i)) {
                     frank();
@@ -442,7 +453,7 @@ async function initWindowsPanel() {
         }
         const id = row.dataset.id;
         if (row.classList.contains('closed')) {
-            await common.rpc.openWindow(id);
+            await common.rpc.openWidgetWindow(id);
         } else {
             await common.rpc.highlightWindow(id);
         }
@@ -450,8 +461,8 @@ async function initWindowsPanel() {
     winsEl.querySelector('.add-new input[type="button"]').addEventListener('click', async ev => {
         ev.preventDefault();
         const type = ev.currentTarget.closest('.add-new').querySelector('select').value;
-        const id = await common.rpc.createWindow({type});
-        await common.rpc.openWindow(id);
+        const {id} = await common.rpc.createWidgetWindow({type});
+        await common.rpc.openWidgetWindow(id);
     });
     winsEl.addEventListener('click', async ev => {
         const btn = ev.target.closest('.button[data-action]');
@@ -501,6 +512,7 @@ export async function settingsMain() {
             el.href = sample.url;
         }
     }).catch(e => console.error(e));
+    const athleteRefreshPromise = common.rpc.getAthlete('self', {refresh: true});
     common.initInteractionListeners();
     const appSettingsUpdaters = Array.from(document.querySelectorAll('form.app-settings'))
         .map(common.initAppSettingsForm);
@@ -529,7 +541,7 @@ export async function settingsMain() {
     common.subscribe('save-widget-window-specs', renderWindows, {source: 'windows'});
     common.subscribe('set-windows', renderWindows, {source: 'windows'});
     extraData.webServerURL = await common.rpc.getWebServerURL();
-    const athlete = await common.rpc.getAthlete('self', {refresh: true, noWait: true});
+    const athlete = await common.rpc.getAthlete('self');
     extraData.profileDesc = athlete && athlete.sanitizedFullname;
     if (athlete) {
         document.querySelector('img.avatar').src = athlete.avatar || 'images/blankavatar.png';
@@ -551,7 +563,8 @@ export async function settingsMain() {
         }, {source: 'gameConnection'});
     }
     extraData.gpuEnabled = await common.rpc.getLoaderSetting('gpuEnabled');
-    document.querySelector('form').addEventListener('input', async ev => {
+    const forms = document.querySelectorAll('form');
+    forms.forEach(x => x.addEventListener('input', async ev => {
         const el = ev.target.closest('[data-store="loader"]');
         if (!el) {
             return;
@@ -563,11 +576,30 @@ export async function settingsMain() {
         } else {
             throw new TypeError("Unsupported");
         }
-    }, {capture: true});
+    }, {capture: true}));
     const loginInfo = await common.rpc.getZwiftLoginInfo();
     extraData.mainZwiftLogin = loginInfo && loginInfo.main && loginInfo.main.username;
     extraData.monitorZwiftLogin = loginInfo && loginInfo.monitor && loginInfo.monitor.username;
     await appSettingsUpdate(extraData);
     await common.initSettingsForm('form.settings')();
     await initWindowsPanel();
+    athleteRefreshPromise.then(x => {
+        if (!x) {
+            return;
+        }
+        if (x.avatar && (!athlete || athlete.avatar !== x.avatar)) {
+            document.querySelector('img.avatar').src = x.avatar;
+        }
+        if (extraData.profileDesc !== x.sanitizedFullname) {
+            extraData.profileDesc = x.sanitizedFullname;
+            appSettingsUpdate(extraData);
+        }
+    });
+}
+
+const q = new URL(import.meta.url).searchParams;
+if (q.has('main')) {
+    main();
+} else if (q.has('settings')) {
+    settingsMain();
 }

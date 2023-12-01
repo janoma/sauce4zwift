@@ -13,7 +13,7 @@
     font-family: 'Material Symbols Rounded';
     font-style: normal;
     font-weight: 100 700;
-    src: url('../fonts/MaterialSymbolsRounded.woff2?v=1') format('woff2');
+    src: url('../fonts/MaterialSymbolsRounded.woff2?v=2') format('woff2');
 }
 
 @font-face {
@@ -35,8 +35,8 @@ html {box-sizing: border-box;}
 
 :focus-visible {
     outline-style: solid;
-    outline-width: 2.5px;
-    outline-offset: 2px;
+    outline-width: 2px;
+    outline-offset: 1px;
     outline-color: color.shade(primary, 10%, 0.92);
 }
 
@@ -47,7 +47,7 @@ html {
     width: 100%;
     height: 100%;
     padding: 2px;
-    background-color: rgba(127, 127, 127, 0.002); // Using full transparency breaks on windows
+    background-color: rgb(127 127 127 / 0.002); // Using full transparency breaks on windows
     font-size: clamp(2.2mm, 7vw, 18mm);
     -webkit-user-select: none;
     user-select: none;
@@ -86,6 +86,11 @@ html {
                     cursor: move;
                 }
             }
+        }
+
+        &.html-frame #content {
+            border: 1.5mm solid color.get(bookend);
+            border-top-width: 0;
         }
 
         .app-drag {
@@ -173,11 +178,134 @@ a {
     }
 }
 
+attr[for] {
+    display: inline;
+    cursor: pointer;
+
+    &:hover {
+        text-decoration: underline;
+        text-decoration-style: wavy;
+        text-decoration-thickness: from-font;
+    }
+}
+
+dialog.sauce-attr {
+    all: revert;
+    display: inline-flex;
+    flex-direction: column;
+    z-index: 1000000000;
+    position: fixed;
+    font-size: 0.92em;
+    line-height: normal;
+    padding: 0.7em 0.8em;
+    border: 1px solid color.shade(fg, 20%, 0.3);
+    word-break: break-word;
+    border-radius: 0.28em;
+    background-color: color.shade(bg, -10%);
+    color: color.shade(fg, 4%);
+    box-shadow: 1px 1px 4px 0 #0003;
+    max-width: 32ch;
+
+    &.anchored {
+        margin: 0.32em 0 0 0;
+    }
+
+    li {
+        padding: 0.28em 0.1em;
+    }
+}
+
+.tabbed {
+    display: flex;
+    flex-direction: column;
+
+    header.tabs {
+        display: flex;
+        flex: 0 0 auto;
+        overflow-x: auto;
+
+        .tab {
+            font-size: 1.2em;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-variant: all-small-caps;
+            flex: 1 0 auto;
+            padding: 0.2em;
+            transition: color 200ms, background 200ms;
+            border-color: color.shade(fg, 0%, 0.5);
+            border-width: 0.09rem;
+            border-style: solid;
+            background-clip: padding-box;
+            position: relative;
+
+            &:not(.active) {
+                cursor: pointer;
+                color: color.shade(fg, 20%, 90%);
+                border-left-style: none;
+                border-right-style: none;
+                border-top-color: transparent;
+
+                &:hover {
+                    color: color.get(fg);
+                    background-color: color.shade(fg, 0%, 0.1);
+                }
+
+                + .tab:not(.active)::before {
+                    $width: 0.05em;
+                    content: '';
+                    position: absolute;
+                    left: $width * -0.5;
+                    border-left: $width dotted color.get(fg, 50%);
+                    padding: 0.6em 0; // controls height
+                }
+            }
+
+            &.active {
+                border-bottom-color: transparent;
+                border-top-left-radius: 0.32em;
+                border-top-right-radius: 0.32em;
+                background-image: linear-gradient(to bottom, color.shade(fg, 100%, 0.5), transparent 80%);
+
+                &:first-child {
+                    border-left-color: transparent;
+                    border-top-left-radius: 0;
+                }
+
+                &:last-child {
+                    border-right-color: transparent;
+                    border-top-right-radius: 0;
+                }
+            }
+        }
+    }
+
+    > .tab {
+        padding: 1em 1.2em 0.5em;
+        border-bottom: none !important;
+        overflow-x: auto;
+
+        &:not(.active) {
+            display: none;
+        }
+
+        > .title:first-child {
+            padding-top: 0;
+        }
+    }
+}
+
 #settings {
     padding: 0.5em 0.8em;
     overflow: auto;
     overflow: overlay;
     container: settings / inline-size;
+
+    &.tabbed {
+        margin-top: 0.2em;
+        padding: 0 0 0.5em 0;
+    }
 
     a {
         text-decoration: underline;
@@ -185,88 +313,6 @@ a {
         text-underline-offset: 2px;
     }
 
-    &.tabbed {
-        margin-top: 0.2em;
-        padding: 0 0 0.5em 0;
-        display: flex;
-        flex-direction: column;
-
-        header.tabs {
-            display: flex;
-            flex: 0 0 auto;
-            overflow-x: auto;
-
-            .tab {
-                font-size: 1.2em;
-                font-weight: 500;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-variant: all-small-caps;
-                flex: 1 0 auto;
-                padding: 0.2em;
-                transition: color 200ms, background 200ms;
-                border-color: color.shade(fg, 0%, 0.5);
-                border-width: 0.09rem;
-                border-style: solid;
-                background-clip: padding-box;
-                position: relative;
-
-                &:not(.active) {
-                    cursor: pointer;
-                    color: color.shade(fg, 20%, 90%);
-                    border-left-style: none;
-                    border-right-style: none;
-                    border-top-color: transparent;
-
-                    &:hover {
-                        color: color.get(fg);
-                        background-color: color.shade(fg, 0%, 0.1);
-                    }
-
-                    + .tab:not(.active)::before {
-                        $width: 1px;
-                        content: '';
-                        position: absolute;
-                        left: $width * -0.5;
-                        border-left: $width dotted color.get(fg, 50%);
-                        padding: 0.6em 0; // controls height
-                    }
-                }
-
-                &.active {
-                    border-bottom-color: transparent;
-                    border-top-left-radius: 0.32em;
-                    border-top-right-radius: 0.32em;
-                    background-image: linear-gradient(to bottom, color.shade(fg, 100%, 0.5), transparent 80%);
-
-                    &:first-child {
-                        border-left-color: transparent;
-                        border-top-left-radius: 0;
-                    }
-
-                    &:last-child {
-                        border-right-color: transparent;
-                        border-top-right-radius: 0;
-                    }
-                }
-            }
-        }
-
-        > .tab {
-            padding: 1em 1.2em 0.5em;
-            border-bottom: none !important;
-            overflow-x: auto;
-
-            &:not(.active) {
-                display: none;
-            }
-
-            > .title:first-child {
-                padding-top: 0;
-            }
-        }
-    }
 
     > .section {
         padding: 0.5em;
@@ -393,6 +439,27 @@ input[type="number"] {
     }
 }
 
+label.edited .restart-required {
+    font-variant: all-small-caps;
+    display: inline-block;
+    font-size: 0.92em;
+    margin-left: 0.22em;
+    margin-right: 0.22em;
+    color: #ffda20;
+    font-weight: 650;
+    cursor: pointer;
+    font-stretch: 90%;
+    filter: drop-shadow(0 0 0.3px #000) drop-shadow(0 0 0.3px #000);
+
+    &:hover {
+        text-decoration: underline;
+    }
+
+    &::after {
+        content: 'Restart Required';
+    }
+}
+
 form {
     label {
         display: flex;
@@ -406,17 +473,6 @@ form {
 
         &.indent key {
             padding-left: 0.8em;
-        }
-
-        &.edited .restart-required::after {
-            content: 'Restart Required';
-            font-variant: all-small-caps;
-            display: inline-block;
-            font-size: 0.9em;
-            margin-left: 0.2em;
-            margin-right: 0.2em;
-            color: #e5d82b;
-            font-weight: 500;
         }
 
         &.edited[warning] {
@@ -473,54 +529,12 @@ form {
             padding: 0 1em 0.5em 1em;
             opacity: 0;
         }
-
-        &[disabled] {
-        }
-    }
-}
-
-.button-bar {
-    width: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex: 0 0 auto;
-    background-image: linear-gradient(
-        135deg,
-        var(--theme-button-bar-top-left),
-        var(--theme-button-bar-bottom-right));
-    overflow: hidden;
-    font-size: 1rem;
-
-    .button {
-        padding: 1em 0.6em;
-        flex: 1 1 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-
-        &:hover {
-            background: #fff3;
-        }
-
-        &:active {
-            background: #0003;
-        }
-
-        &.disabled {
-            pointer-events: none;
-            opacity: 0.2;
-        }
-
-        > img {
-            height: 1.2em !important;
-            filter: invert(1);
-        }
     }
 }
 
 #titlebar {
-    $header-height: 13mm;
+    --header-height: 13mm;
+    --extra-height: 0mm;
     flex: 0 0 auto;
     display: flex;
     flex-direction: column;
@@ -530,29 +544,33 @@ form {
     width: 100%;
     color: white;
     overflow: hidden;
-    max-height: calc($header-height + 3.5rem); // Roughly fixed header plus optional button bar
+    max-height: calc(var(--header-height) + var(--extra-height));
     transition: max-height 300ms, padding 300ms;
     box-shadow: 0 1px 5px #0009;
 
     .button {
         border-radius: 0.22em;
+        text-decoration: none !important;
+
+        span {
+            display: inline-block;
+            margin-top: -0.2em; // XXX offset by bottom margin of ms. :/
+            padding: 0 0.1em;
+            font-variant: all-petite-caps;
+            vertical-align: middle;
+        }
 
         > img {
             height: 0.85em;
             filter: invert(1);
         }
 
-        &:hover {
+        &:not([disabled]):not(.disabled):hover {
             background-color: #fff3;
         }
 
-        &:active {
+        &:not([disabled]):not(.disabled):active {
             background-color: #0003;
-        }
-
-        &.disabled {
-            pointer-events: none;
-            opacity: 0.2;
         }
     }
 
@@ -563,7 +581,7 @@ form {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        height: $header-height;
+        height: var(--header-height);
         background-image: linear-gradient(to top, color.shade(bookend, 0%), color.shade(bookend, 12%));
         color: color.shade(bookend, 100%);
         padding-right: 0.3em;
@@ -637,13 +655,13 @@ form {
 }
 
 @property --bg-from-color {
-    syntax: '<color>';
+    syntax: "<color>";
     inherits: false;
     initial-value: #0000;
 }
 
 @property --bg-to-color {
-    syntax: '<color>';
+    syntax: "<color>";
     inherits: false;
     initial-value: #0000;
 }
@@ -666,13 +684,23 @@ a.std.button {
     opacity: 0.80;
     transition: opacity 200ms, background 200ms;
 
-    &:hover {
+    &:not([disabled]):not(.disabled):hover {
         opacity: 1;
     }
 
-    &:active {
+    &:not([disabled]):not(.disabled):active {
         img, ms {
             opacity: 0.6;
+        }
+    }
+
+    &[disabled],
+    &.disabled {
+        opacity: 0.3 !important;
+        cursor: default !important;
+
+        &:active {
+            pointer-events: none !important;
         }
     }
 
@@ -692,6 +720,12 @@ a.std.button {
         box-shadow: none;
         transition: box-shadow 100ms, --bg-from-color 150ms, --bg-to-color 150ms;
 
+        &.outline {
+            --bg-from-color: #{color.shade(primary, 120%)};
+            --bg-to-color: #{color.shade(primary, 80%)};
+            color: color.get(primary);
+        }
+
         &.icon-only {
             padding: 0.1rem;
 
@@ -704,18 +738,13 @@ a.std.button {
             display: none;
         }
 
-        &.disabled {
-            pointer-events: none;
-            opacity: 0.2;
-        }
-
-        &:hover {
+        &:not([disabled]):not(.disabled):hover {
             --bg-from-color: #{color.shade(fg, 0%)};
             --bg-to-color: #{color.shade(fg, 5%)};
             box-shadow: 0.05rem 0.05rem 0.4rem 0 #0004;
         }
 
-        &:active {
+        &:not([disabled]):not(.disabled):active {
             box-shadow: inset 0 0 0.8rem 0 #0008;
         }
 
@@ -724,7 +753,7 @@ a.std.button {
             --bg-to-color: #{color.shade(negative, -10%)};
             color: color.shade(negative, 100%);
 
-            &:hover {
+            &:not([disabled]):not(.disabled):hover {
                 --bg-from-color: #{color.shade(negative, 5%)};
                 --bg-to-color: #{color.shade(negative, -5%)};
             }
@@ -735,7 +764,7 @@ a.std.button {
             --bg-to-color: #{color.shade(primary, -10%)};
             color: color.shade(primary, 100%);
 
-            &:hover {
+            &:not([disabled]):not(.disabled):hover {
                 --bg-from-color: #{color.shade(primary, 5%)};
                 --bg-to-color: #{color.shade(primary, -5%)};
             }
@@ -839,14 +868,16 @@ span.button.std {
     color: #fff;
     vertical-align: middle;
     line-height: 1;
-    font-variant: all-small-caps;
-    font-weight: bold;
+    text-transform: uppercase;
+    font-weight: 700;
     background-image: linear-gradient(to bottom,
-        hsla(var(--hue), 70%, 40%, 0.86),
-        hsla(var(--hue), 87%, 50%, 0.86));
+        hsl(var(--hue) 70% 40% / 0.86),
+        hsl(var(--hue) 87% 50% / 0.86));
     border-radius: 0.28em;
-    padding: 0.1em 0.5em 0.2em;
+    padding: 0.3em 0.4em 0.27em;
+    padding: 0.48em 0.6em 0.4em;
     text-shadow: 0 0 1px #000;
+    font-size: 0.72em;
 }
 
 dialog {

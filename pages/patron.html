@@ -69,32 +69,6 @@
 
             async function main() {
                 common.initInteractionListeners();
-                const audioCtx = new AudioContext();
-                const danceAB = await (await fetch('sounds/dance.ogg')).arrayBuffer();
-                let buffer;
-                audioCtx.decodeAudioData(danceAB, _buffer => buffer = _buffer);
-                let audioSrc;
-                const link = document.querySelector('.patron-link');
-                link.addEventListener('click', ev => {
-                    const btn = ev.currentTarget;
-                    if (audioSrc) {
-                        audioSrc.stop();
-                        btn.classList.remove('pressed');
-                        btn.offsetLeft;
-                    }
-                    audioSrc = audioCtx.createBufferSource();
-                    audioSrc.buffer = buffer;
-                    audioSrc.connect(audioCtx.destination);
-                    audioSrc.addEventListener('ended', ev => {
-                        if (ev.currentTarget === audioSrc) {
-                            link.dispatchEvent(new Event('danced'));
-                            document.dispatchEvent(new Event('danced'));
-                        }
-                    });
-                    audioSrc.start(0);
-                    ev.preventDefault();
-                    requestAnimationFrame(() => btn.classList.add('pressed'));
-                });
             }
             main();
         </script>
@@ -111,14 +85,17 @@
             <h5>Without this support I will become financially derelict and swiftly banished from society. 😞</h5>
 
             <br/>
-            <i class="note">NOTE: Facebook login does not work but you can use email/password instead.</i>
 
-            <div class="std button xl patron-link primary">Link with Patreon</div>
+            <a class="std button xl primary patron-link" href external>Link with Patreon</a>
+
+            <h5>OR if you have a code: <a href="patron-a51.html" class="std button code">Enter Code</a></h5>
+
+            <br/><br/>
+
+            <small>For assistance send an email to <a external href="mailto:support@sauce.llc">support@sauce.llc</a>.</small>
 
             <br/>
-            <h5>OR if you have a code: <a href="patron-a51.html" class="std button code">Enter Code</a>
-            <br/><br/><br/><small>For assistance send an email to
-            <a external href="mailto:support@sauce.llc">support@sauce.llc</a>.</small>
+            <div class="std button xs patron-link-legacy">Legacy Patreon Link</div>
         </main>
     </body>
 </html>

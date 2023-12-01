@@ -4,7 +4,7 @@
         <meta charset="utf-8"/>
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
         <meta name="apple-mobile-web-app-capable" content="yes"/>
-        <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline';"/>
+        <meta http-equiv="Content-Security-Policy" content="script-src 'self';"/>
 
         <title>Settings - Sauce for Zwift™</title>
 
@@ -16,10 +16,7 @@
         <link rel="stylesheet" href="css/common.css"/>
         <link rel="stylesheet" href="css/overview-settings.css"/>
 
-        <script type="module">
-            import {settingsMain} from './src/overview.mjs';
-            settingsMain();
-        </script>
+        <script type="module" src="./src/overview.mjs?settings"></script>
     </head>
     <body>
         <div id="titlebar">
@@ -50,18 +47,29 @@
                        external class="sauce-star">Frank</a>
                 </div>
 
-                <hr/>
+                <br/>
 
                 <label>
                     <key>Version:</key>
                     <span class="display-field" name="version"></span>
                 </label>
                 <label>
-                    <key>Web Server URL:</key>
-                    <input style="display: none" type="checkbox" name="webServerEnabled"/>
-                    <a href external target="_blank" class="display-field" name="webServerURL"
-                       data-depends-on="webServerEnabled">disabled</a>
+                    <key data-added="2023-12-01">Update channel:</key>
+                    <select name="updateChannel">
+                        <option value="stable">Stable</option>
+                        <option value="beta">Beta</option>
+                        <option value="alpha">Alpha</option>
+                    </select>
+                    <span class="restart-required"></span>
                 </label>
+
+                <br/>
+
+                <label>
+                    <key>Zwift Profile:</key>
+                    <a href="profile.html?windowType=profile" target="_blank"><img class="avatar"/><span class="display-field" name="profileDesc"/></a>
+                </label>
+
                 <label class="login" title="This should be the account you use for the real Zwift game">
                     <key>Main Zwift Login:</key>
                     <span class="display-field" name="mainZwiftLogin">-</span>
@@ -76,14 +84,10 @@
                          class="std button xs" data-action="logout-zwift" data-id="monitor">Logout</div>
                     <span class="restart-required"></span>
                 </label>
-                <label>
-                    <key>Zwift Profile:</key>
-                    <a href="profile.html?width=800&height=350" target="_blank"><img class="avatar"/><span class="display-field" name="profileDesc"/></a>
-                </label>
 
                 <hr class="electron-only"/>
 
-                <div class="section electron-only">
+                <div class="section electron-only maintenance">
                     <div class="title">Maintenance:</div>
                     <div class="action-buttons">
                         <div class="std button danger" title="Reset window positions and configuration to defaults"
@@ -92,20 +96,14 @@
                              data-action="reset-athletes-db">Clear Athletes Cache</div>
                         <div class="std button" data-action="restart">Restart</div>
                     </div>
+                    <div class="links">
+                        <a href="logs.html?windowType=logs" target="_blank">Debug Logs</a>
+                        <a href="stats-for-nerds.html?windowType=stats-for-nerds" target="_blank">Stats for Nerds</a>
+                    </div>
                 </div>
             </form>
 
             <form class="app-settings section tab">
-                <label>
-                    <key data-added="2023-04-10">Update channel:</key>
-                    <select name="updateChannel">
-                        <option value="stable">Stable</option>
-                        <option value="beta">Beta</option>
-                        <option value="alpha">Alpha</option>
-                    </select>
-                    <span class="restart-required"></span>
-                </label>
-
                 <label title="Access Sauce for Zwift from any browser on your network">
                     <key>Web Server:</key>
                     <input type="checkbox" name="webServerEnabled"/>
@@ -117,6 +115,13 @@
                     <input data-depends-on="webServerEnabled" type="number" size="5"
                            name="webServerPort"/>
                     <span class="restart-required"></span>
+                </label>
+
+                <label class="indent">
+                    <key>Web Server URL:</key>
+                    <input style="display: none" type="checkbox" name="webServerEnabled"/>
+                    <a href external target="_blank" class="display-field" name="webServerURL"
+                       data-depends-on="webServerEnabled">disabled</a>
                 </label>
 
                 <label title="Game Connection allows Sauce to perform optional functions like switching the athlete being watched."
@@ -234,6 +239,24 @@ If you require the Zwift Companion App's Game mode, DO NOT enable this feature."
                     <key>Lock fields:</key>
                     <input type="checkbox" name="lockedFields"/>
                 </label>
+
+                <hr/>
+
+                <label>
+                    <key data-added="2023-12-01">Hide Analysis button:</key>
+                    <input type="checkbox" name="hideAnalysisButton"/>
+                </label>
+                <label>
+                    <key data-added="2023-12-01">Hide Athletes button:</key>
+                    <input type="checkbox" name="hideAthletesButton"/>
+                </label>
+                <label>
+                    <key data-added="2023-12-01">Hide Events button:</key>
+                    <input type="checkbox" name="hideEventsButton"/>
+                </label>
+
+                <hr/>
+
                 <label>
                     <key>Theme override:</key>
                     <select is="sauce-theme" override></select>
@@ -295,7 +318,9 @@ If you require the Zwift Companion App's Game mode, DO NOT enable this feature."
             |
             <a href="https://www.sauce.llc/legal/sauce4zwift-privacy.html?frame" target="_blank">Privacy Policy</a>
             |
-            <a href="mailto://support@sauce.llc">Support</a>
+            <attr for="tp">TrainingPeaks</attr>
+            |
+            <attr for="support">Support</attr>
         </footer>
     </body>
 </html>

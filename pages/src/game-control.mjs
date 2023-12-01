@@ -1,5 +1,7 @@
 import * as common from './common.mjs';
 
+common.enableSentry();
+
 
 function updateConnStatus(s) {
     if (!s) {
@@ -18,7 +20,7 @@ function updateConnStatus(s) {
 
 export async function main() {
     common.initInteractionListeners();
-    common.subscribe('status', updateConnStatus, {source: 'gameConnection'});
+    common.subscribe('status', updateConnStatus, {source: 'gameConnection', persistent: true});
     //common.subscribe('athlete/self', onAthleteData);
     document.querySelector('#content').addEventListener('click', ev => {
         const btn = ev.target.closest('.button');

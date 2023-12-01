@@ -1,16 +1,8 @@
 import * as common from './common.mjs';
-import * as locale from '../../shared/sauce/locale.mjs';
+import * as curves from '/shared/curves.mjs';
+import * as locale from '/shared/sauce/locale.mjs';
 
 const H = locale.human;
-const svgInternalScale = 0.01;
-
-
-let idle;
-if (window.requestIdleCallback) {
-    idle = options => new Promise(resolve => requestIdleCallback(resolve, options));
-} else {
-    idle = () => new Promise(resolve => setTimeout(resolve, 10 + 1000 * Math.random()));
-}
 
 
 function createElementSVG(name, attrs={}) {
@@ -28,46 +20,6 @@ function createElement(name, attrs={}) {
         el.setAttribute(key, value);
     }
     return el;
-}
-
-
-function controlPoint(cur, prev, next, reverse, smoothing) {
-    prev ||= cur;
-    next ||= cur;
-    const dx = next[0] - prev[0];
-    const dy = next[1] - prev[1];
-    const distance = Math.sqrt(dx * dx + dy * dy);
-    const angle = Math.atan2(dy, dx) + (reverse ? Math.PI : 0);
-    const length = distance * smoothing;
-    return [cur[0] + Math.cos(angle) * length, cur[1] + Math.sin(angle) * length];
-}
-
-
-function smoothPath(points, {looped, smoothing=0.2}={}) {
-    const path = ['M' + points[0].join()];
-    if (looped) {
-        for (let i = 1; i < points.length + 1; i++) {
-            const prevPrev = points.at(i - 2);
-            const prev = points.at(i - 1);
-            const cur = points[i % points.length];
-            const next = points.at((i + 1) % points.length);
-            const cpStart = controlPoint(prev, prevPrev, cur, false, smoothing);
-            const cpEnd = controlPoint(cur, prev, next, true, smoothing);
-            path.push('C' + [cpStart.join(), cpEnd.join(), cur.join()].join(' '));
-        }
-    } else {
-        for (let i = 1; i < points.length; i++) {
-            const cpStart = controlPoint(points[i - 1], points[i - 2], points[i], false, smoothing);
-            const cpEnd = controlPoint(points[i], points[i - 1], points[i + 1], true, smoothing);
-            path.push('C' + [cpStart.join(), cpEnd.join(), points[i].join()].join(' '));
-        }
-    }
-    return path.join('');
-}
-
-
-function isVisible() {
-    return document.visibilityState === 'visible';
 }
 
 
@@ -167,6 +119,10 @@ class Transition {
         }
     }
 
+    getValues() {
+        return this._dst ? Array.from(this._dst) : null;
+    }
+
     _recalcCurrent() {
         const now = this.now();
         const progress = (now - this._startTime) / (this._endTime - this._startTime);
@@ -185,38 +141,150 @@ class Transition {
 }
 
 
+export class MapEntity extends EventTarget {
+    constructor(id, type='generic') {
+        super();
+        this.new = true;
+        this.id = id;
+        this.type = type;
+        this.el = document.createElement('div');
+        this.el.classList.add('entity', type);
+        this.el.dataset.id = id;
+        this.el.dataset.idType = typeof id;
+        this.transition = new Transition();
+        this.pin = null;
+        this._pinContent = null;
+        this._pinHTML = null;
+        this._position = null;
+        this._map = null;
+    }
+
+    setMap(map) {
+        this._map = map;
+        if (this._position) {
+            this.transition.incDisabled();
+            try {
+                this.setPosition(this._position);
+            } finally {
+                this.transition.decDisabled();
+            }
+        }
+    }
+
+    togglePin(en) {
+        if (this.pin) {
+            if (en !== true) {
+                this.pin.remove();
+                this.pin = null;
+                this._pinContent = null;
+            }
+        } else if (en !== false) {
+            this.pin = document.createElement('div');
+            this.pin.setAttribute('tabindex', 0); // Support click to focus so it can stay higher
+            this.pin.classList.add('pin-anchor');
+            const pinInner = document.createElement('div');
+            pinInner.classList.add('pin-inner');
+            this.pin.append(pinInner);
+            this._pinContent = document.createElement('div');
+            this._pinContent.classList.add('pin-content');
+            this._pinContent.addEventListener('click', ev => {
+                if (!ev.target.closest('a')) {
+                    this.togglePin(false);
+                }
+            });
+            pinInner.append(this._pinContent);
+            if (this._pinHTML) {
+                this._pinContent.innerHTML = this._pinHTML;
+            } else {
+                this.pin.classList.add('hidden');
+            }
+        }
+        const ev = new Event('pinned');
+        ev.visible = !!this.pin;
+        this.dispatchEvent(ev);
+        return !!this.pin;
+    }
+
+    toggleHidden(en) {
+        this.el.classList.toggle('hidden', en);
+        if (this.pin) {
+            this.pin.classList.toggle('hidden', this.el.classList.contains('hidden'));
+        }
+    }
+
+    setPinHTML(html) {
+        if (this._pinHTML === html) {
+            return;
+        }
+        this._pinHTML = html;
+        if (this.pin) {
+            this._pinContent.innerHTML = html;
+            this.pin.classList.toggle('hidden', !html);
+        }
+    }
+
+    setPosition([x, y]) {
+        if (typeof x !== 'number' || typeof y !== 'number') {
+            throw new TypeError('invalid position');
+        }
+        this._position = [x, y]; // Save non-rotate-hacked position.
+        if (this._map?.rotateCoordinates) {
+            [x, y] = [y, -x];
+        }
+        this.transition.setValues([x, y]);
+        const ev = new Event('position');
+        ev.position = this._position;
+        this.dispatchEvent(ev);
+    }
+
+    getPosition() {
+        return this._position;
+    }
+}
+
+
 export class SauceZwiftMap extends EventTarget {
-    constructor({el, worldList, zoom=1, zoomMin=0.25, zoomMax=4.5, autoHeading=true,
+    constructor({el, worldList, zoom=1, zoomMin=0.25, zoomMax=10, autoHeading=true,
                  style='default', opacity=1, tiltShift=null, maxTiltShiftAngle=65,
-                 sparkle=false, quality=1, verticalOffset=0, fpsLimit=60,
-                 zoomPriorityTilt=true}) {
+                 sparkle=false, quality=1, verticalOffset=0, fpsLimit=30,
+                 zoomPriorityTilt=true, preferRoute, autoCenter=true}) {
         super();
         el.classList.add('sauce-map-container');
         this.el = el;
         this.worldList = worldList;
+        this.preferRoute = preferRoute;
         this.zoomMin = zoomMin;
         this.zoomMax = zoomMax;
         this.maxTiltShiftAngle = maxTiltShiftAngle;
         this.watchingId = null;
         this.athleteId = null;
         this.courseId = null;
+        this.portal = null;
         this.roadId = null;
+        this.routeId = null;
+        this.route = null;
         this.worldMeta = null;
-        this.adjHeading = 0;
+        this.rotateCoordinates = null;
+        this._adjHeading = 0;
+        this.style = style;
+        this.quality = quality;
+        this._canvasScale = null;
         this._headingRotations = 0;
-        this._lastHeading = 0;
-        this._headingOfft = 0;
-        this._athleteCache = new Map();
+        this._heading = 0;
+        this.headingOffset = 0;
         this._ents = new Map();
         this._pendingEntityUpdates = new Set();
+        this.center = [0, 0];
         this._centerXY = [0, 0];
         this._anchorXY = [0, 0];
+        this.dragOffset = [0, 0];
         this._dragXY = [0, 0];
         this._layerScale = null;
         this._pauseRefCnt = 0;
         this._pinned = new Set();
-        this._mapFinalScale = null;
+        this._mapScale = null;
         this._lastFrameTime = 0;
+        this._perspective = 800;
         this._wheelState = {
             nextAnimFrame: null,
             done: null,
@@ -238,31 +306,50 @@ export class SauceZwiftMap extends EventTarget {
             mapCanvas: createElement('canvas', {class: 'map-background'}),
             ents: createElement('div', {class: 'entities'}),
             pins: createElement('div', {class: 'pins'}),
-            roads: createElementSVG('svg', {class: 'roads'}),
+            paths: createElementSVG('svg', {class: 'paths'}),
+            roadDefs: createElementSVG('defs'),
+            pathLayersGroup: createElementSVG('g', {class: 'path-layers'}),
+            roadLayers: {
+                gutters: createElementSVG('g', {class: 'gutters'}),
+                surfacesLow: createElementSVG('g', {class: 'surfaces low'}),
+                surfacesMid: createElementSVG('g', {class: 'surfaces mid'}),
+                surfacesHigh: createElementSVG('g', {class: 'surfaces high'}),
+            },
+            userLayers: {
+                surfacesLow: createElementSVG('g', {class: 'surfaces low'}),
+                surfacesMid: createElementSVG('g', {class: 'surfaces mid'}),
+                surfacesHigh: createElementSVG('g', {class: 'surfaces high'}),
+            }
         };
-        this._elements.map.append(this._elements.mapCanvas, this._elements.roads,
-                                  this._elements.ents);
+        this._elements.paths.append(this._elements.roadDefs, this._elements.pathLayersGroup);
+        this._elements.pathLayersGroup.append(...Object.values(this._elements.roadLayers));
+        this._elements.pathLayersGroup.append(...Object.values(this._elements.userLayers));
+        this._elements.map.append(this._elements.mapCanvas, this._elements.paths, this._elements.ents);
         this.el.addEventListener('wheel', this._onWheelZoom.bind(this));
         this.el.addEventListener('pointerdown', this._onPointerDown.bind(this));
         this._elements.ents.addEventListener('click', this._onEntsClick.bind(this));
         this.incPause();
         this.setZoom(zoom);
         this.setAutoHeading(autoHeading);
-        this.setStyle(style);
+        this.setAutoCenter(autoCenter);
         this.setOpacity(opacity);
         this.setTiltShift(tiltShift);
         this.setZoomPriorityTilt(zoomPriorityTilt);
         this.setSparkle(sparkle);
-        this.setQuality(quality);
         this.setVerticalOffset(verticalOffset);
         this.setFPSLimit(fpsLimit);
-        this._resizeObserver = new ResizeObserver(([x]) => this._elHeight = x.contentRect.height);
-        this._resizeObserver.observe(this.el);
         this.el.append(this._elements.map, this._elements.pins);
-        this._elHeight = this.el.clientHeight;
+        this._resizeObserver = new ResizeObserver(() => this._updateContainerLayout());
+        this._resizeObserver.observe(this.el);
+        this._updateContainerLayout();
         this.decPause();
         this._gcLoop();
         requestAnimationFrame(this._transformAnimationLoopBound);
+    }
+
+    _updateContainerLayout() {
+        this._elRect = this.el.getBoundingClientRect();
+        this._fullUpdateAsNeeded();
     }
 
     setFPSLimit(fps) {
@@ -270,30 +357,32 @@ export class SauceZwiftMap extends EventTarget {
         this._msPerFrame = 1000 / fps | 0;
     }
 
-    setStyle(style) {
-        this.style = style || 'default';
-        if (!this.isPaused()) {
-            this._updateMapBackground();
+    async setStyle(style='default') {
+        if (style === this.style) {
+            return;
         }
+        this.style = style;
+        await this._updateMapBackground();
     }
 
     setOpacity(v) {
-        this._elements.mapCanvas.style.setProperty('--opacity', isNaN(v) ? 1 : v);
+        this._elements.map.style.setProperty('--opacity', isNaN(v) ? 1 : v);
     }
 
     _fullUpdateAsNeeded() {
-        if (!this.isPaused()) {
+        const takeAction = !this.isPaused();
+        if (takeAction) {
             if (!this._adjustLayerScale()) {
-                this._updateGlobalTransform({render: true});
+                this._updateGlobalTransform();
+                this._renderFrame();
             }
-            return true;
         }
-        return false;
+        return takeAction;
     }
 
     setTiltShift(v) {
         v = v || null;
-        this._tiltShift = v;
+        this.tiltShift = v;
         this._fullUpdateAsNeeded();
     }
 
@@ -306,30 +395,66 @@ export class SauceZwiftMap extends EventTarget {
         this.el.classList.toggle('sparkle', !!en);
     }
 
-    setQuality(q) {
+    _qualityToCanvasScale(quality) {
+        const cd = this._elements.mapCanvas.dataset;
+        const pixels = Number(cd.naturalWidth) * Number(cd.naturalHeight);
+        if (!pixels) {
+            console.warn("Using naive canvas scale method");
+            return quality < 0.5 ? 0.25 : quality < 0.85 ? 0.5 : 1;
+        }
+        const pixelMegabyte = 1024 * 1024 / 4; // RGBA 8 bits per channel, 4 channels
+        const lowBudget = 4 * pixelMegabyte; // ~1024^2
+        const highBudget = 192 * pixelMegabyte; // ~7094^2
+        const ratio = Math.sqrt(((highBudget - lowBudget) * quality + lowBudget) / pixels);
+        const q = 15;
+        const quantizedRatio = Math.round(ratio * q) / q;
+        return Math.min(1, quantizedRatio);
+    }
+
+    async setQuality(q) {
         this.quality = q;
+        const cs = this._qualityToCanvasScale(q);
+        if (cs !== this._canvasScale) {
+            this._canvasScale = cs;
+            await this._updateMapBackground();
+        }
         this._fullUpdateAsNeeded();
     }
 
     setVerticalOffset(v) {
         this.verticalOffset = v;
-        if (!this.isPaused()) {
-            this._updateGlobalTransform({render: true});
-        }
+        this._fullUpdateAsNeeded();
     }
 
-    setZoom(zoom) {
-        this.zoom = zoom;
-        this._applyZoom();
+    setZoom(zoom, options) {
+        this.zoom = Math.max(this.zoomMin, Math.min(this.zoomMax, zoom));
+        this._applyZoom(options);
+    }
+
+    setBounds(tl, br, pad=0.12) {
+        let width = br[0] - tl[0];
+        let height = tl[1] - br[1];
+        const center = [tl[0] + width / 2, br[1] + height / 2];
+        // As strange as this seems, every world is rotated by -90deg when other
+        // correction factors are applied, so width and height are swapped for
+        // purposes of finding our ideal bounding box sizes.
+        [width, height] = [height, width];
+        const boundsRatio = width / height;
+        const viewRatio = this._elRect.width / this._elRect.height;
+        const zoom = viewRatio > boundsRatio ?
+            this._elRect.height / (height * (1 + pad) * this._mapScale) :
+            this._elRect.width / (width * (1 + pad) * this._mapScale);
+        this._setCenter(center);
+        this.setZoom(zoom, {disableEvent: true});
     }
 
     _adjustZoom(adj) {
         this.zoom = Math.max(this.zoomMin, Math.min(this.zoomMax, this.zoom + adj));
     }
 
-    _applyZoom() {
+    _applyZoom(options={}) {
         this._elements.map.style.setProperty('--zoom', this.zoom);
-        if (this._fullUpdateAsNeeded()) {
+        if (this._fullUpdateAsNeeded() && !options.disableEvent) {
             const ev = new Event('zoom');
             ev.zoom = this.zoom;
             this.dispatchEvent(ev);
@@ -383,24 +508,26 @@ export class SauceZwiftMap extends EventTarget {
         document.addEventListener('pointercancel', this._onPointerDoneBound, {once: true});
     }
 
-    setDragOffset(x, y) {
-        this._dragXY[0] = x;
-        this._dragXY[1] = y;
-        if (!this.isPaused()) {
-            this._updateGlobalTransform({render: true});
-            const dragEv = new Event('drag');
-            dragEv.drag = [x, y];
-            this.dispatchEvent(dragEv);
+    setDragOffset(pos) {
+        if (arguments.length === 2 && typeof pos === 'number') {
+            pos = Array.from(arguments);
         }
+        this.dragOffset = pos;
+        this._dragXY = this._rotateWorldPos(pos);
+        this._fullUpdateAsNeeded();
     }
 
     setAutoHeading(en) {
-        if (!en) {
-            this._setHeading(0);
-        }
         this.autoHeading = en;
-        if (!this.isPaused()) {
-            this._updateGlobalTransform({render: true});
+        if (!this.trackingPaused) {
+            this.setHeading(en ? this._autoHeadingSaved || 0 : 0);
+        }
+    }
+
+    setAutoCenter(en) {
+        this.autoCenter = en;
+        if (en && this._autoCenterSaved) {
+            this.setCenter(this._autoCenterSaved);
         }
     }
 
@@ -422,13 +549,30 @@ export class SauceZwiftMap extends EventTarget {
     _handlePointerDragEvent(ev, state) {
         cancelAnimationFrame(state.nextAnimFrame);
         state.nextAnimFrame = requestAnimationFrame(() => {
-            const deltaX = ev.pageX - state.lastX;
-            const deltaY = ev.pageY - state.lastY;
+            const dragEv = new Event('drag');
+            const dx = ev.pageX - state.lastX;
+            const dy =  ev.pageY - state.lastY;
             state.lastX = ev.pageX;
             state.lastY = ev.pageY;
-            const x = this._dragXY[0] + (deltaX / this.zoom);
-            const y = this._dragXY[1] + (deltaY / this.zoom);
-            this.setDragOffset(x, y);
+            if (ev.ctrlKey) {
+                const heading = this.headingOffset - dx * 0.1;
+                this.setHeadingOffset(heading);
+                dragEv.heading = heading;
+                const tiltShift = this.tiltShift - dy * 0.001;
+                this.setTiltShift(tiltShift);
+                dragEv.tiltShift = tiltShift;
+            } else {
+                const [tx, ty] = this._unrotateWorldPos([dx, dy]);
+                const l = Math.sqrt(tx * tx + ty * ty);
+                const a = Math.atan2(ty, tx) - (this._rotate / 180 * Math.PI);
+                const adjX = Math.cos(a) * l;
+                const adjY = Math.sin(a) * l;
+                const f = 1 / (this.zoom * this._mapScale / this._canvasScale);
+                const pos = [this.dragOffset[0] + adjX * f, this.dragOffset[1] + adjY * f];
+                this.setDragOffset(pos);
+                dragEv.drag = pos;
+            }
+            this.dispatchEvent(dragEv);
         });
     }
 
@@ -467,28 +611,41 @@ export class SauceZwiftMap extends EventTarget {
         this.trackingPaused = false;
     }
 
-    async _updateMapBackground() {
+    _updateMapBackground = common.asyncSerialize(async function() {
+        const m = this.worldMeta;
+        const canvas = this._elements.mapCanvas;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        canvas.classList.toggle('hidden', !!this.portal);
+        const img = new Image();
         const suffix = {
             default: '',
             neon: '-neon',
         }[this.style];
-        const canvas = this._elements.mapCanvas;
-        const ctx = canvas.getContext('2d');
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        const img = new Image();
-        img.src = `https://www.sauce.llc/products/sauce4zwift/maps/world` +
-            `${this.worldMeta.worldId}${suffix || ''}.webp`;
         try {
-            await img.decode();
+            await new Promise((resolve, reject) => {
+                img.addEventListener('load', resolve);
+                img.addEventListener('error', ev => {
+                    console.warn('image load error:', ev);
+                    reject(new Error('Image load error'));
+                });
+                const version = this.worldMeta.mapVersion ? `-v${this.worldMeta.mapVersion}` : '';
+                img.src = `https://www.sauce.llc/products/sauce4zwift/maps/world` +
+                    `${this.worldMeta.worldId}${version}${suffix || ''}.webp`;
+            });
         } catch(e) {
             console.warn("Image decode interrupted/failed", e);
             return;
         }
-        canvas.width = img.naturalWidth;
-        canvas.height = img.naturalHeight;
-        ctx.drawImage(img, 0, 0);
+        canvas.dataset.naturalWidth = img.naturalWidth;
+        canvas.dataset.naturalHeight = img.naturalHeight;
+        this._canvasScale = this._qualityToCanvasScale(this.quality);
+        canvas.width = img.naturalWidth * this._canvasScale;
+        canvas.height = img.naturalHeight * this._canvasScale;
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        this._mapScale = 1 / (m.tileScale / m.mapScale / this._canvasScale);
         this._adjustLayerScale({force: true});
-    }
+    });
 
     incPause() {
         this._pauseRefCnt++;
@@ -503,7 +660,7 @@ export class SauceZwiftMap extends EventTarget {
             throw new Error("decPause < 0");
         } else if (this._pauseRefCnt === 0) {
             try {
-                this._updateGlobalTransform({render: true});
+                this._fullUpdateAsNeeded();
             } finally {
                 this._mapTransition.decDisabled();
             }
@@ -514,202 +671,390 @@ export class SauceZwiftMap extends EventTarget {
         return this._pauseRefCnt > 0;
     }
 
-    async setCourse(courseId) {
-        if (courseId === this.courseId) {
-            console.warn("debounce setCourse");
+    setCourse = common.asyncSerialize(async function(courseId, {portalRoad}={}) {
+        const isPortal = portalRoad != null;
+        if (isPortal) {
+            if (courseId === this.courseId && this.portal && portalRoad === this.roadId) {
+                return;
+            }
+        } else if (courseId === this.courseId && !this.portal) {
             return;
         }
         this.incPause();
         try {
-            await this._setCourse(courseId);
+            this.courseId = courseId;
+            this.portal = isPortal;
+            this.worldMeta = this.worldList.find(x => x.courseId === courseId);
+            if (isPortal) {
+                this.rotateCoordinates = false;
+                await this._applyPortal(portalRoad);
+            } else {
+                this.rotateCoordinates = !!this.worldMeta.rotateRouteSelect;
+                await this._applyCourse();
+            }
         } finally {
             this.decPause();
         }
-    }
+    });
 
-    async _setCourse(courseId) {
-        this.courseId = courseId;
-        this.worldMeta = this.worldList.find(x => x.courseId === courseId);
-        const {minX, minY, tileScale, mapScale, anchorX, anchorY} = this.worldMeta;
-        this._mapScale = 1 / (tileScale / mapScale);
-        this._anchorXY[0] = -(minX + anchorX) * this._mapScale;
-        this._anchorXY[1] = -(minY + anchorY) * this._mapScale;
-        this._setHeading(0);
-        for (const x of this._ents.values()) {
-            x.remove();
-        }
-        this._ents.clear();
-        this._athleteCache.clear();
+    async _applyCourse() {
+        const m = this.worldMeta;
+        this._anchorXY[0] = -(m.minX + m.anchorX);
+        this._anchorXY[1] = -(m.minY + m.anchorY);
+        this._resetElements([
+            m.minX + m.anchorX,
+            m.minY + m.anchorY,
+            m.maxX - m.minX,
+            m.maxY - m.minY
+        ]);
         const [roads] = await Promise.all([
-            common.getRoads(this.worldMeta.worldId),
+            common.getRoads(this.courseId),
             this._updateMapBackground(),
         ]);
         this._renderRoads(roads);
     }
 
+    async _applyPortal(roadId) {
+        const m = this.worldMeta;
+        const road = await common.getRoad('portal', roadId);
+        this._anchorXY[0] = -(m.minX + m.anchorX);
+        this._anchorXY[1] = -(m.minY + m.anchorY);
+        this._resetElements([
+            m.minX + m.anchorX + road.path[0][0],
+            m.minY + m.anchorY + road.path[0][1],
+            m.maxX - m.minX,
+            m.maxY - m.minY
+        ]);
+        await this._updateMapBackground();
+        this._renderRoads([road]);
+        this.setActiveRoad(roadId);
+    }
+
+    _resetElements(viewBox) {
+        Object.values(this._elements.roadLayers).forEach(x => x.replaceChildren());
+        for (const ent of Array.from(this._ents.values()).filter(x => x.gc)) {
+            this.removeEntity(ent);
+        }
+        this._elements.roadDefs.replaceChildren();
+        this._elements.pins.replaceChildren();
+        this._elements.paths.setAttribute('viewBox', viewBox.join(' '));
+        this._elements.pathLayersGroup.classList.toggle('rotated-coordinates', !!this.rotateCoordinates);
+        this._setHeading(0);
+        this._pendingEntityUpdates.clear();
+    }
+
     setWatching(id) {
         if (this.watchingId != null && this._ents.has(this.watchingId)) {
             const ent = this._ents.get(this.watchingId);
-            ent.classList.remove('watching');
+            ent.el.classList.remove('watching');
         }
         this.watchingId = id;
         if (id != null && this._ents.has(id)) {
             const ent = this._ents.get(id);
-            ent.classList.add('watching');
+            ent.el.classList.add('watching');
         }
-        this.setDragOffset(0, 0);
+        this.setDragOffset([0, 0]);
     }
 
     setAthlete(id) {
         if (this.athleteId != null && this._ents.has(this.athleteId)) {
             const ent = this._ents.get(this.athleteId);
-            ent.classList.remove('self');
+            ent.el.classList.remove('self');
         }
         this.athleteId = id;
         if (id != null && this._ents.has(id)) {
             const ent = this._ents.get(id);
-            ent.classList.add('self');
+            ent.el.classList.add('self');
         }
     }
 
-    _fixWorldPos(pos) {
-        // Maybe zomday I'll know why...
-        return this.worldMeta.mapRotateHack ? [pos[1], -pos[0]] : pos;
+    _rotateWorldPos(pos) {
+        // Use sparingly;  If working with large groups of entities rotate the group instead.
+        return this.rotateCoordinates ? [pos[1], -pos[0], pos[2]] : pos;
     }
 
-    _renderRoads(roads, ids) {
-        ids = ids || Object.keys(roads);
-        const defs = createElementSVG('defs');
+    _unrotateWorldPos(pos) {
+        // Use sparingly;  If working with large groups of entities rotate the group instead.
+        return this.rotateCoordinates ? [-pos[1], pos[0], pos[2]] : pos;
+    }
+
+    _createCurvePath(points, loop, type='CatmullRom') {
+        const curveFunc = {
+            CatmullRom: curves.catmullRomPath,
+            Bezier: curves.cubicBezierPath,
+        }[type];
+        return curveFunc(points, {loop});
+    }
+
+    _renderRoads(roads) {
+        const {surfacesLow, gutters} = this._elements.roadLayers;
         // Because roads overlap and we want to style some of them differently this
         // make multi-sport roads higher so we don't randomly style overlapping sections.
-        ids.sort((a, b) =>
-            (roads[a] ? roads[a].sports.length : 0) -
-            (roads[b] ? roads[b].sports.length : 0));
-        const roadways = {gutter: [], surface: []};
-        for (const id of ids) {
-            const road = roads[id];
-            if (!road) {
-                console.error("Road not found:", id);
+        roads = Array.from(roads);
+        roads.sort((a, b) => a.sports.length - b.sports.length);
+        for (const road of roads) {
+            if ((!road.sports.includes('cycling') && !road.sports.includes('running')) || !road.isAvailable) {
                 continue;
             }
-            if (!road.sports.includes('cycling') && !road.sports.includes('running')) {
-                continue;
-            }
-            const d = [];
-            for (const pos of road.path) {
-                const [x, y] = this._fixWorldPos(pos);
-                d.push([x * svgInternalScale, y * svgInternalScale]);
-            }
-            const path = createElementSVG('path', {
-                id: `road-path-${id}`,
-                d: smoothPath(d, {looped: road.looped})
-            });
-            const clip = createElementSVG('clipPath', {id: `road-clip-${id}`});
-            let boxMin = this._fixWorldPos(road.boxMin);
-            let boxMax = this._fixWorldPos(road.boxMax);
-            if (this.worldMeta.mapRotateHack) {
-                [boxMin, boxMax] = [boxMax, boxMin];
-            }
-            const clipBox = createElementSVG('path', {
-                d: [
-                    `M ${boxMin[0] * svgInternalScale} ${boxMin[1] * svgInternalScale}`,
-                    `H ${boxMax[0] * svgInternalScale}`,
-                    `V ${boxMax[1] * svgInternalScale}`,
-                    `H ${boxMin[0] * svgInternalScale}`,
-                    `Z`
-                ].join('')
-            });
-            clip.append(clipBox);
-            defs.append(path, clip);
-            for (const [key, arr] of Object.entries(roadways)) {
-                arr.push(createElementSVG('use', {
-                    "class": `${key} ${road.sports.map(x => 'sport-' + x).join(' ')}`,
-                    "data-road-id": id,
-                    "clip-path": `url(#road-clip-${id})`,
-                    "href": `#road-path-${id}`,
+            this._elements.roadDefs.append(createElementSVG('path', {
+                id: `road-path-${road.id}`,
+                d: road.curvePath.toSVGPath()
+            }));
+            for (const g of [gutters, surfacesLow]) {
+                g.append(createElementSVG('use', {
+                    "class": 'road ' + road.sports.map(x => `sport-${x}`).join(' '),
+                    "data-id": road.id,
+                    "href": `#road-path-${road.id}`,
                 }));
             }
         }
-        this._elements.roads.setAttribute('viewBox', [
-            (this.worldMeta.minX + this.worldMeta.anchorX) * svgInternalScale,
-            (this.worldMeta.minY + this.worldMeta.anchorY) * svgInternalScale,
-            (this.worldMeta.maxX - this.worldMeta.minX) * svgInternalScale,
-            (this.worldMeta.maxY - this.worldMeta.minY) * svgInternalScale,
-        ].join(' '));
-        this._activeRoad = createElementSVG('use', {"class": 'surface active'});
         if (this.roadId != null) {
-            this.setRoad(this.roadId);
+            this.setActiveRoad(this.roadId);
         }
-        // SVG doesn't have z-index, element order is therefore critical.
-        this._elements.roads.replaceChildren(
-            defs,
-            ...roadways.gutter,
-            ...roadways.surface,
-            this._activeRoad);
+    }
+
+    latlngToPosition([lat, lon]) {
+        return this.worldMeta.flippedHack ? [
+            (lat - this.worldMeta.latOffset) * this.worldMeta.latDegDist * 100,
+            (lon - this.worldMeta.lonOffset) * this.worldMeta.lonDegDist * 100
+        ] : [
+            (lon - this.worldMeta.lonOffset) * this.worldMeta.lonDegDist * 100,
+            -(lat - this.worldMeta.latOffset) * this.worldMeta.latDegDist * 100
+        ];
     }
 
     setRoad(id) {
+        console.warn("DEPRECATED: use setActiveRoad");
+        return this.setActiveRoad(id);
+    }
+
+    setActiveRoad(id) {
         this.roadId = id;
-        if (!this._activeRoad) {
-            return;
+        this.routeId = null;
+        this.route = null;
+        if (this._routeHighlight) {
+            this._routeHighlight.elements.forEach(x => x.remove());
+            this._routeHighlight = null;
         }
-        this._activeRoad.setAttribute('clip-path', `url(#road-clip-${id})`);
-        this._activeRoad.setAttribute('href', `#road-path-${id}`);
+        const surface = this._elements.roadLayers.surfacesMid;
+        let r = surface.querySelector('.road.active');
+        if (!r) {
+            r = createElementSVG('use', {class: 'road active'});
+            surface.append(r);
+        }
+        r.setAttribute('href', `#road-path-${id}`);
+    }
+
+    setActiveRoute = common.asyncSerialize(async function(id, laps=1) {
+        this.roadId = null;
+        this.routeId = id;
+        const activeRoad = this._elements.roadLayers.surfacesMid.querySelector('.road.active');
+        if (activeRoad) {
+            activeRoad.remove();
+        }
+        const route = await common.getRoute(id);
+        if (this._routeHighlight) {
+            this._routeHighlight.elements.forEach(x => x.remove());
+            this._routeHighlight = null;
+        }
+        if (route) {
+            this._routeHighlight = this.addHighlightPath(route.curvePath, 'route-' + id, {layer: 'mid'});
+        } else {
+            console.warn("Route not found:", id);
+        }
+        this.route = route;
+        return route;
+    });
+
+    _addShape(shape, attrs, options={}) {
+        const layer = this._elements.userLayers[{
+            high: 'surfacesHigh',
+            mid: 'surfacesMid',
+            low: 'surfacesLow',
+        }[options.layer || 'high']];
+        const el = createElementSVG(shape, attrs);
+        layer.append(el);
+        return el;
+    }
+
+    drawLine(p0, p1, {color="#000a", size=2, layer='high', ...attrs}={}) {
+        return this._addShape('line', {
+            x1: p0[0],
+            y1: p0[1],
+            x2: p1[0],
+            y2: p1[1],
+            "stroke-width": `${size}em`,
+            stroke: color,
+            ...attrs,
+        });
+    }
+
+    drawCircle(c, {color="#000a", size=10, borderColor="gold", borderSize=0.5, layer='high', ...attrs}={}) {
+        return this._addShape('circle', {
+            cx: c[0],
+            cy: c[1],
+            r: `${size}em`,
+            fill: color,
+            "stroke-width": `${borderSize}em`,
+            stroke: borderColor,
+            ...attrs,
+        });
+    }
+
+    addHighlightPath(path, id, {debug, includeEdges=true, extraClass='', width, color, layer='mid'}={}) {
+        const elements = [];
+        if (debug) {
+            const nodes = path.nodes;
+            for (let i = 0; i < nodes.length; i++) {
+                elements.push(this.drawCircle(nodes[i].end, {
+                    color: '#40ba',
+                    borderColor: 'black',
+                    size: 4,
+                    title: i
+                }));
+                if (nodes[i].cp1) {
+                    if (i) {
+                        const title = `cp1-${i}`;
+                        elements.push(this.drawLine(nodes[i].cp1, nodes[i - 1].end, {layer, title}));
+                        elements.push(this.drawCircle(nodes[i].cp1, {color: '#000b', size: 3, title}));
+                    }
+                    const title = `cp2-${i}`;
+                    elements.push(this.drawLine(nodes[i].cp2, nodes[i].end, {layer, title}));
+                    elements.push(this.drawCircle(nodes[i].cp2, {color: '#fffb', size: 3, title}));
+                }
+            }
+            if (nodes.length) {
+                elements.push(this.drawCircle(nodes[0].end, {color: '#0f09', size: 8, title: 'start'}));
+                elements.push(this.drawCircle(nodes.at(-1).end, {color: '#f009', size: 8, title: 'end'}));
+            }
+        }
+        const node = createElementSVG('path', {
+            class: `highlight ${extraClass}`,
+            "data-id": id,
+            d: path.toSVGPath({includeEdges}),
+        });
+        if (width) {
+            node.style.setProperty('--width', width);
+        }
+        if (color) {
+            node.style.setProperty('stroke', color);
+        }
+        const surfaceEl = this._elements.userLayers[{
+            high: 'surfacesHigh',
+            mid: 'surfacesMid',
+            low: 'surfacesLow',
+        }[layer]];
+        surfaceEl.append(node);
+        elements.push(node);
+        return {id, path, elements};
+    }
+
+    addHighlightLine(points, id, options={}) {
+        return this.addHighlightPath(this._createCurvePath(points, options.loop), id, options);
+    }
+
+    addPoint(point, extraClass) {
+        const ent = new MapEntity(`${point[0]}-${point[1]}-${Date.now()}`, 'point');
+        ent.transition.setDuration(0);
+        ent.setPosition(point);
+        if (extraClass) {
+            ent.el.classList.add(extraClass);
+        }
+        this.addEntity(ent);
+        return ent;
+    }
+
+    addEntity(ent) {
+        if (!(ent instanceof MapEntity)) {
+            throw new TypeError("MapEntity argument required");
+        }
+        if (this._ents.has(ent.id)) {
+            throw new Error("id already in use");
+        }
+        ent.setMap(this);
+        this._ents.set(ent.id, ent);
+        this._pendingEntityUpdates.add(ent);
+        ent.addEventListener('position', () => this._pendingEntityUpdates.add(ent));
+    }
+
+    removeEntity(ent) {
+        this._ents.delete(ent.id);
+        this._pinned.delete(ent);
+        this._pendingEntityUpdates.delete(ent);
+        ent.togglePin(false);
+        ent.el.remove();
     }
 
     _addAthleteEntity(state) {
-        const ent = document.createElement('div');
-        ent.new = true;
-        ent.classList.add('entity', 'athlete');
-        ent.classList.toggle('self', state.athleteId === this.athleteId);
-        ent.classList.toggle('watching', state.athleteId === this.watchingId);
-        ent.dataset.athleteId = ent.athleteId = state.athleteId;
-        ent.lastSeen = Date.now();
-        ent.wt = state.worldTime;
-        ent.transition = new Transition({duration: 2000});
-        ent.delayEst = common.expWeightedAvg(4, 1000);
-        this._ents.set(state.athleteId, ent);
+        const ent = new MapEntity(state.athleteId, 'athlete');
+        ent.lastSeen = 0;
+        ent.gc = true;
+        ent.delayEst = common.expWeightedAvg(6, 2000);
+        ent.el.classList.toggle('self', state.athleteId === this.athleteId);
+        ent.el.classList.toggle('watching', state.athleteId === this.watchingId);
+        ent.setPinHTML('<ms>hourglass_empty</ms>...');
+        ent.setMap(this);
+        ent.addEventListener('pinned', ev => {
+            if (ev.visible) {
+                this._pinned.add(ent);
+                this._elements.pins.append(ent.pin);
+                this._pendingEntityUpdates.add(ent);
+            } else {
+                this._pinned.delete(ent);
+            }
+        });
+        this._ents.set(ent.id, ent);
     }
 
     _onEntsClick(ev) {
-        const ent = ev.target.closest('.entity');
+        const entEl = ev.target.closest('.entity');
+        if (!entEl) {
+            return;
+        }
+        const id = entEl.dataset.idType === 'number' ? Number(entEl.dataset.id) : entEl.dataset.id;
+        const ent = this._ents.get(id);
         if (!ent) {
             return;
         }
-        if (!ent.pin) {
-            const pin = document.createElement('div');
-            pin.setAttribute('tabindex', 0); // Support click to focus so it can stay higher
-            pin.classList.add('pin-anchor');
-            const pinInner = document.createElement('div');
-            pinInner.classList.add('pin-inner');
-            pin.append(pinInner);
-            const pinContent = document.createElement('div');
-            pinContent.classList.add('pin-content');
-            pinInner.append(pinContent);
-            ent.pin = pin;
-            this._elements.pins.append(pin);
-            this._pinned.add(ent);
-        } else {
-            this._pinned.delete(ent);
-            ent.pin.remove();
-            ent.pin = null;
-        }
+        ent.togglePin();
     }
 
-    renderAthleteStates(states) {
-        if (this.watchingId == null) {
+    renderAthleteStates = common.asyncSerialize(async states => {
+        if (this.watchingId == null || !common.isVisible()) {
             return;
         }
         const watching = states.find(x => x.athleteId === this.watchingId);
         if (!watching && this.courseId == null) {
             return;
         } else if (watching) {
-            if (watching.courseId !== this.courseId) {
-                console.debug("Setting new course:", watching.courseId);
-                this.setCourse(watching.courseId);
+            if (watching.portal) {
+                if (!this.portal || watching.roadId !== this.roadId || watching.courseId !== this.courseId) {
+                    await this.setCourse(watching.courseId, {portalRoad: watching.roadId});
+                }
+            } else if (this.portal || watching.courseId !== this.courseId) {
+                await this.setCourse(watching.courseId);
             }
-            if (watching.roadId !== this.roadId) {
-                this.setRoad(watching.roadId);
+            if (this.preferRoute) {
+                if (watching.routeId) {
+                    if (this.routeId !== watching.routeId) {
+                        let sg;
+                        if (watching.eventSubgroupId) {
+                            sg = await common.rpc.getEventSubgroup(watching.eventSubgroupId);
+                        }
+                        // Note sg.routeId is sometimes out of sync with state.routeId; avoid thrash
+                        if (sg && sg.routeId === watching.routeId) {
+                            await this.setActiveRoute(sg.routeId, sg.laps);
+                        } else {
+                            await this.setActiveRoute(watching.routeId);
+                        }
+                    }
+                } else {
+                    this.route = null;
+                    this.routeId = null;
+                }
+            }
+            if (!this.routeId && watching.roadId !== this.roadId) {
+                this.setActiveRoad(watching.roadId);
             }
         }
         const now = Date.now();
@@ -732,67 +1077,90 @@ export class SauceZwiftMap extends EventTarget {
                 powerLevel = 'z6';
             }
             const ent = this._ents.get(state.athleteId);
-            ent.dataset.powerLevel = powerLevel;
-            ent.wt = state.worldTime;
-            ent.lastSeen = now;
-            const age = state.worldTime - ent.wt;
+            const age = now - ent.lastSeen;
             if (age) {
-                const influence = ent.playing ? age + 200 : age * 2;
-                const duration = ent.delayEst(influence);
-                ent.transition.setDuration(duration);
+                if (age < 2500) {
+                    // Try to animate close to the update rate without going under.
+                    // If we miss (transition is not playing) prefer lag over jank.
+                    // Note the lag is calibrated to reducing jumping at 200ms rates (i.e. watching).
+                    const influence = ent.transition.playing ? age + 100 : age * 8;
+                    const duration = ent.delayEst(influence);
+                    ent.transition.setDuration(duration);
+                } else {
+                    ent.transition.setDuration(0);
+                }
             }
-            const pos = this._fixWorldPos([state.x, state.y]);
-            ent.transition.setValues(pos);
+            ent.setPosition([state.x, state.y]);
+            ent.el.dataset.powerLevel = powerLevel;
+            ent.lastSeen = now;
             if (ent.pin) {
-                const ad = this._athleteCache.get(state.athleteId);
-                const name = ad && ad.data && ad.data.athlete ?
-                    `${ad.data.athlete.fLast}` : `ID: ${state.athleteId}`;
-                common.softInnerHTML(ent.pin.querySelector('.pin-content'), `
-                    <a href="/pages/profile.html?id=${state.athleteId}&width=800&height=320"
-                       target="profile">${common.sanitize(name)}</a><br/>
+                const ad = common.getAthleteDataCacheEntry(state.athleteId);
+                const athlete = ad?.athlete;
+                const name = athlete ? `${athlete.fLast}` : `ID: ${state.athleteId}`;
+                const avatar = athlete?.avatar ?
+                    `<avatar-pad></avatar-pad><img class="avatar" src="${athlete.avatar}"/>` : '';
+                ent.setPinHTML(`
+                    <a href="/pages/profile.html?id=${state.athleteId}&windowType=profile"
+                       target="profile_popup_${state.athleteId}">${common.sanitize(name)}${avatar}</a><br/>
                     Power: ${H.power(state.power, {suffix: true, html: true})}<br/>
-                    Speed: ${H.pace(state.speed, {suffix: true, html: true})}
+                    Speed: ${H.pace(state.speed, {suffix: true, html: true, sport: state.sport})}
                 `);
             }
             if (state.athleteId === this.watchingId && !this.trackingPaused) {
+                this._autoHeadingSaved = state.heading;
                 if (this.autoHeading) {
-                    this._setHeading(state.heading);
+                    this._setHeading(this._autoHeadingSaved);
                 }
-                this._centerXY[0] = pos[0] * this._mapScale;
-                this._centerXY[1] = pos[1] * this._mapScale;
-                this._updateGlobalTransform();
+                this._autoCenterSaved = [state.x, state.y];
+                if (this.autoCenter) {
+                    this._setCenter(this._autoCenterSaved);
+                }
+                if (this.autoCenter || this.autoHeading) {
+                    this._updateGlobalTransform();
+                }
             }
             this._pendingEntityUpdates.add(ent);
         }
-        idle().then(() => this._lazyUpdateAthleteDetails(states.map(x => x.athleteId)));
+        common.idle().then(() => this._updateAthleteDetails(states.map(x => x.athleteId)));
+    });
+
+    setHeadingOffset(heading) {
+        this.headingOffset = heading;
+        this.setHeading(this.heading);
+    }
+
+    setHeading(heading) {
+        this._setHeading(heading);
+        this._fullUpdateAsNeeded();
+    }
+
+    _setHeading(heading) {
+        if (Math.abs(this.heading - heading) > 180) {
+            this._headingRotations += Math.sign(this.heading - heading);
+        }
+        const mapAdj = this.rotateCoordinates ? 0 : -90;
+        this._adjHeading = heading + this.headingOffset + this._headingRotations * 360 + mapAdj;
+        this.heading = heading;
+    }
+
+    setCenter(pos) {
+        this._setCenter(pos);
+        this._fullUpdateAsNeeded();
+    }
+
+    _setCenter(pos) {
+        this.center = pos;
+        this._centerXY = this._rotateWorldPos(pos);
     }
 
     async _gcLoop() {
-        await idle({timeout: 1000});
+        await common.idle({timeout: 1000});
         setTimeout(() => this._gcLoop(), 10000);
         const now = Date.now();
-        for (const [athleteId, ent] of this._ents.entries()) {
-            if (now - ent.lastSeen > 15000) {
-                ent.remove();
-                if (ent.pin) {
-                    ent.pin.remove();
-                }
-                this._pendingEntityUpdates.delete(ent);
-                this._ents.delete(athleteId);
+        for (const ent of this._ents.values()) {
+            if (ent.gc && now - ent.lastSeen > 15000) {
+                this.removeEntity(ent);
             }
-        }
-    }
-
-    _updatePins() {
-        const transforms = [];
-        // XXX this batching may not work actually, plus we may not care given how few pins there will be
-        // Avoid spurious reflow with batched reads followed by writes.
-        for (const ent of this._pinned) {
-            const rect = ent.getBoundingClientRect();
-            transforms.push([ent.pin, rect]);
-        }
-        for (const [pin, rect] of transforms) {
-            pin.style.setProperty('transform', `translate(${rect.x + rect.width / 2}px, ${rect.y}px)`);
         }
     }
 
@@ -808,37 +1176,32 @@ export class SauceZwiftMap extends EventTarget {
         //     causes the render pipeline to fail spectacularly and the page is broken.
         //  3. Performance because of #2 is pretty bad for large worlds when zoomed
         //     out.
-        //  The technique here is quite simple, we just examine the zoom level and
-        //  essentially swap out the layer with a different size.  Currently we just
-        //  use the same assets.  The SVG scales of course, and the img is only ever
-        //  scaled down (mostly).  It introduces some jank, so we chunk this operation
-        //  to only perform as needed to stay within GPU constraints.
-        const chunk = 0.5; // How frequently we jank.
-        const adjZoom = Math.min(
-            this.zoomMax,
-            Math.max(this.zoomMin, Math.round(1 / this.zoom / chunk) * chunk));
+        if (this.zoom > this.zoomMax || this.zoom < this.zoomMin) {
+            debugger;
+        }
         let quality = this.quality;
-        if (this._tiltShift) {
+        if (this.tiltShift) {
             // When zoomed in tiltShift can exploded the GPU budget if a lot of
             // landscape is visible.  We need an additional scale factor to prevent
             // users from having to constantly adjust quality.
             const tiltFactor = this._zoomPrioTilt ? Math.min(1, (1 / this.zoomMax * (this.zoom + 1))) : 1;
-            this._tiltShiftAngle = this._tiltShift * this.maxTiltShiftAngle * tiltFactor;
-            quality *= Math.min(1, 15 / Math.max(0, this._tiltShiftAngle - 30));
+            this._tiltShiftAngle = this.tiltShift * this.maxTiltShiftAngle * tiltFactor;
+            quality *= Math.min(1, 20 / Math.max(0, this._tiltShiftAngle - 30));
         } else {
             this._tiltShiftAngle = 0;
         }
-        const scale = 1 / adjZoom * quality;
-        this._tiltHeight = this._tiltShift ? 800 / (this.zoom / scale) : 0;
+        const scale = Math.max(0.05, Math.round(this.zoom * quality / this._canvasScale / 0.25) * 0.25);
+        this._tiltHeight = this.tiltShift ? this._perspective * this._canvasScale / (this.zoom / scale) : 0;
         if (force || this._layerScale !== scale) {
             this.incPause();
             this._layerScale = scale;
             const {mapCanvas, ents, map} = this._elements;
             mapCanvas.style.setProperty('width', `${mapCanvas.width * scale}px`);
             mapCanvas.style.setProperty('height', `${mapCanvas.height * scale}px`);
-            ents.style.setProperty('left', `${this._anchorXY[0] * scale}px`);
-            ents.style.setProperty('top', `${this._anchorXY[1] * scale}px`);
-            map.style.setProperty('--layer-scale', scale);
+            mapCanvas.classList.toggle('hidden', !!this.portal);
+            ents.style.setProperty('left', `${this._anchorXY[0] * scale * this._mapScale}px`);
+            ents.style.setProperty('top', `${this._anchorXY[1] * scale * this._mapScale}px`);
+            map.style.setProperty('--layer-scale', scale * this._canvasScale);
             for (const x of this._ents.values()) {
                 // force refresh of _all_ ents.
                 this._pendingEntityUpdates.add(x);
@@ -849,22 +1212,20 @@ export class SauceZwiftMap extends EventTarget {
         return false;
     }
 
-    _updateGlobalTransform(options={}) {
+    _updateGlobalTransform() {
         if (this._layerScale == null) {
             return;
         }
         const scale = this.zoom / this._layerScale;
-        const relX = this._anchorXY[0] + this._centerXY[0];
-        const relY = this._anchorXY[1] + this._centerXY[1];
-        const dragX = this._dragXY[0] * scale;
-        const dragY = this._dragXY[1] * scale;
-        const tX = -(relX - dragX) * this._layerScale;
-        const tY = -(relY - dragY) * this._layerScale;
+        const relX = (this._anchorXY[0] + this._centerXY[0] - this._dragXY[0]) * this._mapScale;
+        const relY = (this._anchorXY[1] + this._centerXY[1] - this._dragXY[1]) * this._mapScale;
+        const tX = -(relX) * this._layerScale;
+        const tY = -(relY) * this._layerScale;
         const originX = relX * this._layerScale;
         const originY = relY * this._layerScale;
         let vertOffset = 0;
         if (this.verticalOffset) {
-            const height = this._elHeight * this._layerScale / this.zoom;
+            const height = this._elRect.height * this._layerScale / this.zoom * this._canvasScale;
             vertOffset = this.verticalOffset * height;
         }
         this._mapTransition.setValues([
@@ -873,11 +1234,8 @@ export class SauceZwiftMap extends EventTarget {
             scale,
             this._tiltHeight, this._tiltShiftAngle,
             vertOffset,
-            this.adjHeading,
+            this._adjHeading,
         ]);
-        if (options.render) {
-            this._renderFrame();
-        }
     }
 
     _transformAnimationLoop(frameTime) {
@@ -890,112 +1248,92 @@ export class SauceZwiftMap extends EventTarget {
     }
 
     _renderFrame() {
-        const transform = this._mapTransition.getStep();
+        let affectedPins;
+        const transform = (this._mapTransition.disabled || this._mapTransition.playing) &&
+            this._mapTransition.getStep();
         if (transform) {
             const [oX, oY, tX, tY, scale, tiltHeight, tiltAngle, vertOffset, rotate] = transform;
+            this._rotate = rotate;
             this._elements.map.style.setProperty('transform-origin', `${oX}px ${oY}px`);
             this._elements.map.style.setProperty('transform', `
                 translate(${tX}px, ${tY}px)
-                scale(${scale})
+                scale(${scale / this._canvasScale})
                 ${tiltHeight ? `perspective(${tiltHeight}px) rotateX(${tiltAngle}deg)` : ''}
                 ${vertOffset ? `translate(0, ${vertOffset}px)` : ''}
                 rotate(${rotate}deg)
             `);
+            affectedPins = this._pinned.size ? Array.from(this._pinned).map(ent => ({ent})) : [];
+        } else {
+            affectedPins = [];
         }
         const scale = this._mapScale * this._layerScale;
         for (const ent of this._pendingEntityUpdates) {
             const pos = ent.transition.getStep();
             if (pos) {
-                ent.style.setProperty('transform', `translate(${pos[0] * scale}px, ${pos[1] * scale}px)`);
+                ent.el.style.setProperty('transform', `translate(${pos[0] * scale}px, ${pos[1] * scale}px)`);
+                if (!transform && ent.pin) {
+                    affectedPins.push({ent});
+                }
             }
             if (ent.new) {
-                this._elements.ents.append(ent);
+                this._elements.ents.append(ent.el);
                 ent.new = false;
             }
             if (!ent.transition.playing) {
                 this._pendingEntityUpdates.delete(ent);
             }
         }
-        this._updatePins();
+        if (affectedPins.length) {
+            // Avoid spurious reflow with batched reads followed by writes.
+            const xOfft = -this._elRect.left;
+            const yOfft = -this._elRect.top;
+            for (let i = 0; i < affectedPins.length; i++) {
+                const x = affectedPins[i];
+                x.rect = x.ent.el.getBoundingClientRect();
+            }
+            for (let i = 0; i < affectedPins.length; i++) {
+                const {rect, ent} = affectedPins[i];
+                ent.pin.style.setProperty(
+                    'transform', `translate(${rect.x + rect.width / 2 + xOfft}px, ${rect.y + yOfft}px)`);
+            }
+        }
     }
 
     _updateEntityAthleteData(ent, ad) {
         const leader = !!ad.eventLeader;
         const sweeper = !!ad.eventSweeper;
-        const marked = ad.athlete ? !!ad.athlete.marked : false;
-        const following = ad.athlete ? !!ad.athlete.following : false;
+        const marked = !!ad.athlete?.marked;
+        const following = !!ad.athlete?.following;
+        const bot = ad.athlete?.type === 'PACER_BOT';
+        if (bot !== ent.bot) {
+            ent.el.classList.toggle('bot', bot);
+            ent.bot = bot;
+        }
         if (leader !== ent.leader) {
-            ent.classList.toggle('leader', leader);
+            ent.el.classList.toggle('leader', leader);
             ent.leader = leader;
         }
         if (sweeper !== ent.sweeper) {
-            ent.classList.toggle('sweeper', sweeper);
+            ent.el.classList.toggle('sweeper', sweeper);
             ent.sweeper = sweeper;
         }
         if (marked !== ent.marked) {
-            ent.classList.toggle('marked', marked);
+            ent.el.classList.toggle('marked', marked);
             ent.marked = marked;
         }
         if (following !== ent.following) {
-            ent.classList.toggle('following', following);
+            ent.el.classList.toggle('following', following);
             ent.following = following;
         }
     }
 
-    _lazyUpdateAthleteDetails(ids) {
-        const now = Date.now();
-        const refresh = [];
-        for (const id of ids) {
-            const ent = this._ents.get(id);
-            if (!ent) {
-                continue;
-            }
-            const entry = this._athleteCache.get(id) || {ts: 0, data: null};
-            if (now - entry.ts > 30000 + Math.random() * 60000) {
-                entry.ts = now;
-                this._athleteCache.set(id, entry);
-                refresh.push(id);
-            } else if (entry.data) {
-                this._updateEntityAthleteData(ent, entry.data);
+    async _updateAthleteDetails(ids) {
+        const ads = await common.getAthletesDataCached(ids);
+        for (const ad of ads) {
+            const ent = this._ents.get(ad?.athleteId);
+            if (ent && ad) {
+                this._updateEntityAthleteData(ent, ad);
             }
         }
-        if (refresh.length && isVisible()) {
-            common.rpc.getAthletesData(refresh).then(ads => {
-                for (const ad of ads) {
-                    const ent = this._ents.get(ad.athleteId);
-                    if (ent) {
-                        this._updateEntityAthleteData(ent, ad);
-                    }
-                    const ac = this._athleteCache.get(ad.athleteId);
-                    if (ac) {
-                        ac.data = ad;
-                    }
-                }
-            });
-        }
-        for (const [id, entry] of this._athleteCache.entries()) {
-            if (now - entry.ts > 300000) {
-                this._athleteCache.delete(id);
-            }
-        }
-    }
-
-    setHeadingOffset(deg) {
-        this._headingOfft = deg || 0;
-        this._setHeading(this._lastHeading, true);
-        this._updateGlobalTransform({render: true});
-    }
-
-    _setHeading(heading, force) {
-        if (!force && this.trackingPaused) {
-            return false;
-        }
-        if (Math.abs(this._lastHeading - heading) > 180) {
-            this._headingRotations += Math.sign(this._lastHeading - heading);
-        }
-        const mapAdj = this.worldMeta ? (this.worldMeta.rotateRouteSelect ? 0 : -90) : 0;
-        this.adjHeading = heading + this._headingRotations * 360 + this._headingOfft + mapAdj;
-        this._lastHeading = heading;
-        return true;
     }
 }

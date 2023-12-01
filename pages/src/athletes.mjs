@@ -1,6 +1,7 @@
 import * as common from './common.mjs';
 import * as sauce from '../../shared/sauce/index.mjs';
 
+common.enableSentry();
 
 const athleteCardsPromise = sauce.template.getTemplate(`templates/athlete-cards.html.tpl`);
 
@@ -44,15 +45,25 @@ function onSearchInput(ev) {
 
 async function _onSearchInput(el) {
     const resultsEl = el.parentElement.querySelector('.results');
-    const term = el.value;
-    if (term.length < 3) {
-        resultsEl.innerHTML = '';
-        return;
-    }
+    const term = el.value.trim();
     const athleteCards = await athleteCardsPromise;
-    const results = await common.rpc.searchAthletes(term, {pageLimit: 1, limit: 50, start: 0});
-    resultsEl.innerHTML = '';
-    resultsEl.append(await athleteCards(results));
+    let results;
+    if (Number(term).toString() === term) {
+        for (const refresh of [false, true]) {
+            results = [await common.rpc.getAthlete(Number(term), {refresh})]
+                .filter(x => x).map(x => ({id: x.id, athlete: x}));
+            if (results.length) {
+                break;
+            }
+        }
+    } else {
+        if (term.length < 3) {
+            resultsEl.innerHTML = '';
+            return;
+        }
+        results = await common.rpc.searchAthletes(term, {pageLimit: 1, limit: 50, start: 0});
+    }
+    resultsEl.replaceChildren(await athleteCards(results));
 }
 
 

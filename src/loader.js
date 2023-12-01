@@ -1,3 +1,5 @@
+/* global __dirname */
+
 Error.stackTraceLimit = 25;
 
 console.info('Starting...');
@@ -16,22 +18,28 @@ const logFileName = 'sauce.log';
 
 
 let settings = {};
-if (fs.existsSync(userDataPath('loader_settings.json'))) {
+if (fs.existsSync(joinAppPath('userData', 'loader_settings.json'))) {
     try {
-        settings = JSON.parse(fs.readFileSync(userDataPath('loader_settings.json')));
+        settings = JSON.parse(fs.readFileSync(joinAppPath('userData', 'loader_settings.json')));
     } catch(e) {
         console.error("Error loading 'loader_settings.json':", e);
     }
 }
-
-
-function saveSettings(data) {
-    fs.writeFileSync(userDataPath('loader_settings.json'), JSON.stringify(data));
+let buildEnv = {};
+try {
+    buildEnv = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'build.json')));
+} catch(e) {
+    console.error("Error loading 'build.json':", e);
 }
 
 
-function userDataPath(...args) {
-    return path.join(app.getPath('userData'), ...args);
+function saveSettings(data) {
+    fs.writeFileSync(joinAppPath('userData', 'loader_settings.json'), JSON.stringify(data));
+}
+
+
+function joinAppPath(subject, ...args) {
+    return path.join(app.getPath(subject), ...args);
 }
 
 
@@ -45,14 +53,14 @@ function fmtLogDate(d) {
 
 
 function rotateLogFiles(limit=5) {
-    const logs = fs.readdirSync(userDataPath()).filter(x => x.startsWith(logFileName));
+    const logs = fs.readdirSync(joinAppPath('logs')).filter(x => x.startsWith(logFileName));
     logs.sort((a, b) => a < b ? 1 : -1);
     while (logs.length > limit) {
         // NOTE: this is only for if we change the limit to a lower number
         // in a subsequent release.
         const fName = logs.shift();
         console.warn("Delete old log file:", fName);
-        fs.unlinkSync(userDataPath(fName));
+        fs.unlinkSync(joinAppPath('logs', fName));
     }
     let end = Math.min(logs.length, limit - 1);
     for (const fName of logs.slice(-(limit - 1))) {
@@ -60,7 +68,7 @@ function rotateLogFiles(limit=5) {
         if (newFName === fName) {
             continue;
         }
-        fs.renameSync(userDataPath(fName), userDataPath(newFName));
+        fs.renameSync(joinAppPath('logs', fName), joinAppPath('logs', newFName));
     }
 }
 
@@ -101,7 +109,6 @@ function monkeyPatchConsoleWithEmitter() {
             enumerable: descriptors[fn].enumerable,
             get: () => (curLogLevel = level, descriptors[fn].value),
             set: () => {
-                debugger;
                 throw new Error("Double console monkey patch detected!");
             },
         });
@@ -135,6 +142,8 @@ function monkeyPatchConsoleWithEmitter() {
 
 
 function initLogging() {
+    const logsPath = path.join(app.getPath('documents'), 'Sauce', 'logs');
+    app.setAppLogsPath(logsPath);
     let rotateErr;
     try {
         rotateLogFiles();
@@ -144,7 +153,7 @@ function initLogging() {
     }
     process.env.TERM = 'dumb';  // Prevent color tty commands
     const logEmitter = monkeyPatchConsoleWithEmitter();
-    const logFile = userDataPath(logFileName);
+    const logFile = joinAppPath('logs', logFileName);
     const logQueue = [];
     const logFileStream = fs.createWriteStream(logFile);
     logEmitter.on('message', o => {
@@ -172,6 +181,14 @@ function initLogging() {
 async function ensureSingleInstance() {
     if (app.requestSingleInstanceLock({type: 'probe'})) {
         return;
+    }
+    if (process.argv.length > 1 && process.argv.at(-1).startsWith('sauce4zwift://')) {
+        // Emulate mac style open-url eventing for url handling..
+        const url = process.argv.at(-1);
+        console.info("Sending open-url data to primary Sauce instance:", url);
+        app.requestSingleInstanceLock({type: 'open-url', url});
+        app.quit(0);
+        return false;
     }
     const {response} = await dialog.showMessageBox({
         type: 'question',
@@ -240,15 +257,15 @@ async function checkMacOSInstall() {
 
 
 async function initSentry(logEmitter) {
-    if (!app.isPackaged) {
-        console.info("Sentry disabled by dev mode");
+    if (!app.isPackaged || !buildEnv.sentry_dsn) {
+        console.info("Sentry disabled: non production build");
         return;
     }
     const report = await import('../shared/report.mjs');
     report.setSentry(Sentry);
     const skipIntegrations = new Set(['OnUncaughtException', 'Console']);
     Sentry.init({
-        dsn: "https://df855be3c7174dc89f374ef0efaa6a92@o1166536.ingest.sentry.io/6257001",
+        dsn: buildEnv.sentry_dsn,
         // Sentry changes the uncaught exc behavior to exit the process.  I think it may
         // be fixed in newer versions though.
         integrations: data => data.filter(x => !skipIntegrations.has(x.name)),
@@ -256,6 +273,7 @@ async function initSentry(logEmitter) {
     });
     process.on('uncaughtException', report.errorThrottled);
     Sentry.setTag('version', pkg.version);
+    Sentry.setTag('git_commit', buildEnv.git_commit);
     let id = settings.sentryId;
     if (!id) {
         id = Array.from(crypto.randomBytes(16)).map(x => String.fromCharCode(97 + (x % 26))).join('');
@@ -278,6 +296,8 @@ async function initSentry(logEmitter) {
 (async () => {
     const logMeta = initLogging();
     nativeTheme.themeSource = 'dark';
+    // If we are foreced to update to 114+ we'll have to switch our scrollbars to this...
+    //app.commandLine.appendSwitch('enable-features', 'OverlayScrollbar');
     if (settings.gpuEnabled === undefined) {
         settings.gpuEnabled = settings.forceEnableGPU == null ?
             os.platform() !== 'win32' : settings.forceEnableGPU;
@@ -300,12 +320,19 @@ async function initSentry(logEmitter) {
         return;
     }
     const main = await import('./main.mjs');
-    await main.main({
-        sentryAnonId,
-        ...logMeta,
-        loaderSettings: settings,
-        saveLoaderSettings: saveSettings
-    });
+    try {
+        await main.main({
+            sentryAnonId,
+            ...logMeta,
+            loaderSettings: settings,
+            saveLoaderSettings: saveSettings,
+            buildEnv
+        });
+    } catch(e) {
+        if (!(e instanceof main.Exiting)) {
+            throw e;
+        }
+    }
 })().catch(async e => {
     console.error('Startup Error:', e.stack);
     await dialog.showErrorBox('Sauce Startup Error', e.stack);

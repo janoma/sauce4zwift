@@ -1,6 +1,122 @@
 import * as sauce from '../../shared/sauce/index.mjs';
 import * as common from './common.mjs';
 import * as color from './color.mjs';
+import * as elevationMod from './elevation.mjs';
+
+common.enableSentry();
+
+const q = new URLSearchParams(location.search);
+const customIdent = q.get('id');
+const athleteIdent = customIdent || 'watching';
+
+const defaultScreens = [{
+    id: 'default-screen-1',
+    sections: [{
+        type: 'large-data-fields',
+        id: 'default-top-fields',
+        groups: [{
+            id: 'default',
+            type: 'power',
+            defaultFields: ['pwr-cur', 'pwr-avg', 'pwr-max']
+        }],
+    }, {
+        type: 'data-fields',
+        id: 'default-middle-fields',
+        groups: [{
+            type: 'hr',
+            id: 'default-hr',
+            defaultFields: ['hr-cur', 'hr-avg', 'hr-max']
+        }],
+    }, {
+        type: 'split-data-fields',
+        id: 'default-bottom-fields',
+        groups: [customIdent ? {
+            type: 'time',
+            id: 'default-time',
+            defaultFields: ['time-gap', 'time-session']
+        } : {
+            type: 'cadence',
+            id: 'default-left',
+            defaultFields: ['cad-cur', 'cad-avg']
+        }, {
+            type: 'draft',
+            id: 'default-right',
+            defaultFields: ['draft-cur', 'draft-avg']
+        }],
+    }],
+}, {
+    id: 'default-screen-2',
+    sections: [{
+        type: 'large-data-fields',
+        id: 'default-top-fields',
+        groups: [{
+            id: 'default',
+            type: 'power',
+            defaultFields: ['pwr-cur', 'pwr-lap-avg', 'pwr-lap-max']
+        }],
+    }, {
+        type: 'data-fields',
+        id: 'default-middle-fields',
+        groups: [{
+            type: 'hr',
+            id: 'default',
+            defaultFields: ['hr-cur', 'hr-lap-avg', 'hr-lap-max']
+        }],
+    }, {
+        type: 'split-data-fields',
+        id: 'default-bottom-fields',
+        groups: [customIdent ? {
+            type: 'time',
+            id: 'default-time',
+            defaultFields: ['time-gap', 'time-session']
+        } : {
+            type: 'cadence',
+            id: 'default-left',
+            defaultFields: ['cad-cur', 'cad-lap-avg']
+        }, {
+            type: 'draft',
+            id: 'default-right',
+            defaultFields: ['draft-cur', 'draft-lap-avg']
+        }],
+    }],
+}, {
+    id: 'default-screen-3',
+    sections: [{
+        type: 'split-data-fields',
+        id: 'default-top-fields',
+        settings: {
+            hideTitle: true,
+        },
+        groups: [{
+            type: 'power',
+            id: 'default-left',
+            defaultFields: ['pwr-np', 'pwr-tss']
+        }, {
+            type: 'power',
+            id: 'default-right',
+            defaultFields: ['pwr-wbal', 'pwr-energy']
+        }],
+    }, {
+        type: 'split-data-fields',
+        id: 'default-middle-fields',
+        settings: {
+            hideTitle: true,
+        },
+        groups: [{
+            type: 'power',
+            id: 'default-left',
+            defaultFields: ['power-peak-5', 'power-peak-15']
+        }, {
+            type: 'power',
+            id: 'default-right',
+            defaultFields: ['power-peak-60', 'power-peak-300']
+        }],
+    }, {
+        type: 'line-chart',
+        id: 'default-bottom-chart',
+    }],
+}];
+
 
 common.settingsStore.setDefault({
     lockedFields: false,
@@ -9,40 +125,13 @@ common.settingsStore.setDefault({
     backgroundColor: '#00ff00',
     horizMode: false,
     wkgPrecision: 1,
-    screens: [{
-        id: 'default-screen-1',
-        sections: [{
-            type: 'large-data-fields',
-            id: 'default-large-data-fields',
-            groups: [{
-                id: 'default-power',
-                type: 'power',
-            }],
-        }, {
-            type: 'data-fields',
-            id: 'default-data-fields',
-            groups: [{
-                type: 'hr',
-                id: 'default-hr',
-            }],
-        }, {
-            type: 'split-data-fields',
-            id: 'default-split-data-fields',
-            groups: [{
-                type: 'cadence',
-                id: 'default-cadence',
-            }, {
-                type: 'draft',
-                id: 'default-draft',
-            }],
-        }],
-    }],
+    screens: defaultScreens,
 });
 
 const doc = document.documentElement;
 const L = sauce.locale;
 const H = L.human;
-const defaultLineChartLen = Math.ceil(window.innerWidth / 2);
+const defaultLineChartLen = el => Math.ceil(el.clientWidth);
 const chartRefs = new Set();
 let imperial = !!common.settingsStore.get('/imperialUnits');
 L.setImperial(imperial);
@@ -69,7 +158,7 @@ const sectionSpecs = {
     },
     'single-data-field': {
         title: 'Single Data Field',
-        baseType: 'single-data-field',
+        baseType: 'data-fields',
         groups: 1,
     },
     'line-chart': {
@@ -88,15 +177,56 @@ const sectionSpecs = {
     },
     'time-in-zones': {
         title: 'Time in Zones',
-        baseType: 'time-in-zones',
+        baseType: 'chart',
         defaultSettings: {
             style: 'vert-bars',
             type: 'power',
         },
     },
+    'elevation-profile': {
+        title: 'Elevation Profile',
+        baseType: 'chart',
+        defaultSettings: {
+            preferRoute: true,
+        },
+    },
 };
 
 const groupSpecs = {
+    time: {
+        title: 'Time',
+        fields: [{
+            id: 'time-active',
+            value: x => fmtDur(x.stats && x.stats.activeTime),
+            key: 'Active',
+        }, {
+            id: 'time-elapsed',
+            value: x => fmtDur(x.stats && x.stats.elapsedTime),
+            key: 'Elapsed',
+            label: 'elapsed',
+        }, {
+            id: 'time-lap',
+            value: x => fmtDur(curLap(x) && curLap(x).activeTime),
+            key: 'Lap',
+            label: 'lap',
+        }, {
+            id: 'time-session',
+            value: x => fmtDur(x.state && x.state.time),
+            key: 'Session',
+            label: 'session',
+        }, {
+            id: 'time-gap',
+            value: x => fmtDur(x.gap),
+            key: 'Gap',
+            label: 'gap',
+        }, {
+            id: 'time-gap-distance',
+            value: x => fmtDistValue(x.gapDistance),
+            key: 'Gap',
+            label: 'gap',
+            unit: x => fmtDistUnit(x.gapDistance),
+        }]
+    },
     power: {
         title: 'Power',
         backgroundImage: 'url(../images/fa/bolt-duotone.svg)',
@@ -138,12 +268,14 @@ const groupSpecs = {
             id: 'pwr-np',
             value: x => H.number(x.stats && x.stats.power.np),
             label: 'np',
-            key: 'NP',
+            key: 'NP®',
+            tooltip: common.stripHTML(common.attributions.tp),
         }, {
             id: 'pwr-tss',
             value: x => H.number(x.stats && x.stats.power.tss),
             label: 'tss',
-            key: 'TSS',
+            key: 'TSS®',
+            tooltip: common.stripHTML(common.attributions.tp),
         },
         ...makeSmoothPowerFields(5),
         ...makeSmoothPowerFields(15),
@@ -183,7 +315,8 @@ const groupSpecs = {
             id: 'pwr-lap-np',
             value: x => H.number(curLap(x) && curLap(x).power.np),
             label: ['np', '(lap)'],
-            key: 'NP<tiny>(lap)</tiny>',
+            key: 'NP®<tiny>(lap)</tiny>',
+            tooltip: common.stripHTML(common.attributions.tp),
         },
         ...makePeakPowerFields(5, -1),
         ...makePeakPowerFields(15, -1),
@@ -218,7 +351,8 @@ const groupSpecs = {
             id: 'pwr-last-np',
             value: x => H.number(lastLap(x) && lastLap(x).power.np || null),
             label: ['np', '(last lap)'],
-            key: 'NP<tiny>(last lap)</tiny>',
+            key: 'NP®<tiny>(last lap)</tiny>',
+            tooltip: common.stripHTML(common.attributions.tp),
         },
         ...makePeakPowerFields(5, -2),
         ...makePeakPowerFields(15, -2),
@@ -233,9 +367,14 @@ const groupSpecs = {
             key: 'VI',
         }, {
             id: 'pwr-wbal',
-            value: x => H.number(x.stats && (x.stats.power.wBal / 1000), {precision: 1, fixed: true}),
+            value: x => H.number(x.wBal / 1000, {precision: 1, fixed: true}),
             label: 'w\'bal',
             key: 'W\'bal',
+            unit: 'kJ',
+        }, {
+            id: 'pwr-energy',
+            value: x => H.number(x.state?.kj),
+            key: 'Energy',
             unit: 'kJ',
         }],
     },
@@ -379,6 +518,11 @@ const groupSpecs = {
             label: ['max', '(last lap)'],
             key: 'Max<tiny>(last lap)</tiny>',
             unit: 'w',
+        }, {
+            id: 'draft-energy',
+            value: x => H.number(x.stats?.draft?.kj),
+            key: 'Energy',
+            unit: 'kJ',
         }],
     },
     event: {
@@ -400,11 +544,15 @@ const groupSpecs = {
             unit: x => eventMetric === 'distance' ? fmtDistUnit(x && x.remaining) : '',
         }, {
             id: 'ev-dst',
-            value: x => eventMetric === 'distance' ?
-                fmtDistValue(x.state && x.state.eventDistance) : fmtDur(x.state && x.state.time),
-            label: () => eventMetric === 'distance' ? 'dist' : 'time',
-            key: x => eventMetric === 'distance' ? 'Dist' : 'Time',
-            unit: x => eventMetric === 'distance' ? fmtDistUnit(x && x.state && x.state.eventDistance) : '',
+            value: x => fmtDistValue(x.state && x.state.eventDistance),
+            label: 'dist',
+            key: 'Dist',
+            unit: x => fmtDistUnit(x && x.state && x.state.eventDistance),
+        }, {
+            id: 'ev-time',
+            value: x => fmtDur(x.state && x.state.time),
+            label: 'time',
+            key: 'Time',
         }]
     },
     pace: {
@@ -453,24 +601,38 @@ const groupSpecs = {
             unit: speedUnit,
         }],
     },
+    other: {
+        title: 'Other',
+        fields: [{
+            id: 'other-distance',
+            value: x => fmtDistValue(x.state && x.state.distance),
+            key: 'Distance',
+            unit: x => fmtDistUnit(x.state && x.state.distance),
+        }, {
+            id: 'other-grade',
+            value: x => H.number(x.state && x.state.grade * 100, {precision: 1, fixed: true}),
+            key: 'Grade',
+            unit: '%',
+        }]
+    },
+
 };
 
+const smallSpace = '\u0020';
 const lineChartFields = [{
     id: 'power',
     name: 'Power',
     color: '#46f',
     domain: [0, 700],
     rangeAlpha: [0.4, 1],
-    points: [],
     get: x => x.state.power || 0,
-    fmt: x => H.power(x, {seperator: ' ', suffix: true}),
+    fmt: x => H.power(x, {separator: smallSpace, suffix: true}),
 }, {
     id: 'hr',
     name: 'HR',
     color: '#e22',
     domain: [70, 190],
     rangeAlpha: [0.1, 0.7],
-    points: [],
     get: x => x.state.heartrate || 0,
     fmt: x => H.number(x) + ' bpm',
 }, {
@@ -479,16 +641,14 @@ const lineChartFields = [{
     color: '#4e3',
     domain: [0, 100],
     rangeAlpha: [0.1, 0.8],
-    points: [],
     get: x => x.state.speed || 0,
-    fmt: x => fmtPace(x, {seperator: ' ', suffix: true}),
+    fmt: x => fmtPace(x, {separator: smallSpace, suffix: true}),
 }, {
     id: 'cadence',
     name: 'Cadence',
     color: '#ee3',
     domain: [0, 140],
     rangeAlpha: [0.1, 0.8],
-    points: [],
     get: x => x.state.cadence || 0,
     fmt: x => H.number(x) + (sport === 'running' ? ' spm' : ' rpm'),
 }, {
@@ -497,18 +657,16 @@ const lineChartFields = [{
     color: '#e88853',
     domain: [0, 300],
     rangeAlpha: [0.1, 0.9],
-    points: [],
     get: x => x.state.draft || 0,
-    fmt: x => H.power(x, {seperator: ' ', suffix: true}),
+    fmt: x => H.power(x, {separator: smallSpace, suffix: true}),
 }, {
     id: 'wbal',
     name: 'W\'bal',
     color: '#4ee',
     domain: [0, 22000],
     rangeAlpha: [0.1, 0.8],
-    points: [],
-    get: x => x.stats.power.wBal || 0,
-    fmt: x => H.number(x / 1000) + ' kJ',
+    get: x => x.wBal || 0,
+    fmt: x => H.number(x / 1000, {precision: 1, fixed: true, separator: smallSpace, suffix: 'kJ'}),
     markMin: true,
 }];
 
@@ -578,7 +736,7 @@ function fmtDur(v, options) {
     if (v == null || v === Infinity || v === -Infinity || isNaN(v)) {
         return '-';
     }
-    return H.timer(v, options);
+    return H.timer(v, {long: true, ...options});
 }
 
 
@@ -701,7 +859,7 @@ async function createLineChart(el, sectionId, settings) {
     const echarts = await importEcharts();
     const charts = await import('./charts.mjs');
     const fields = lineChartFields.filter(x => settings[x.id + 'En']);
-    const lineChart = echarts.init(el, 'sauce', {renderer: 'svg'});
+    const chart = echarts.init(el, 'sauce', {renderer: 'svg'});
     const visualMapCommon = {
         show: false,
         type: 'continuous',
@@ -714,7 +872,8 @@ async function createLineChart(el, sectionId, settings) {
         emphasis: {disabled: true},
         areaStyle: {},
     };
-    const dataPoints = settings.dataPoints || defaultLineChartLen;
+    chart._dataPoints = 0;
+    chart._streams = {};
     const options = {
         color: fields.map(f => f.color),
         visualMap: fields.map((f, i) => ({
@@ -724,17 +883,13 @@ async function createLineChart(el, sectionId, settings) {
             max: f.domain[1],
             inRange: {colorAlpha: f.rangeAlpha},
         })),
-        grid: {top: 0, left: 0, right: 0, bottom: 0},
         legend: {show: false},
         tooltip: {
             className: 'ec-tooltip',
             trigger: 'axis',
             axisPointer: {label: {formatter: () => ''}}
         },
-        xAxis: [{
-            show: false,
-            data: Array.from(new Array(dataPoints)).map((x, i) => i),
-        }],
+        xAxis: [{show: false, data: []}],
         yAxis: fields.map(f => ({
             show: false,
             min: x => Math.min(f.domain[0], x.min),
@@ -750,68 +905,110 @@ async function createLineChart(el, sectionId, settings) {
             lineStyle: {color: f.color},
         })),
     };
-    lineChart.setOption(options);
-    lineChart._sauceLegend = new charts.SauceLegend({
+    const _resize = chart.resize;
+    chart.resize = function() {
+        const em = Number(getComputedStyle(el).fontSize.slice(0, -2));
+        chart._dataPoints = settings.dataPoints || defaultLineChartLen(el);
+        chart.setOption({
+            xAxis: [{data: Array.from(sauce.data.range(chart._dataPoints))}],
+            grid: {
+                top: 1 * em,
+                left: 0.5 * em,
+                right: 0.5 * em,
+                bottom: 0.1 * em,
+            },
+        });
+        return _resize.apply(this, arguments);
+    };
+    chart.setOption(options);
+    chart.resize();
+    chart._sauceLegend = new charts.SauceLegend({
         el: el.nextElementSibling,
-        chart: lineChart,
+        chart,
         hiddenStorageKey: `watching-hidden-graph-p${sectionId}`,
     });
-    chartRefs.add(new WeakRef(lineChart));
-    return lineChart;
+    chartRefs.add(new WeakRef(chart));
+    return chart;
 }
 
 
-function bindLineChart(lineChart, renderer, settings) {
+function bindLineChart(chart, renderer, settings) {
     const fields = lineChartFields.filter(x => settings[x.id + 'En']);
-    const dataPoints = settings.dataPoints || defaultLineChartLen;
     let lastRender = 0;
-    let oldSport;
-    renderer.addCallback(data => {
-        const now = Date.now();
-        if (now - lastRender < 900) {
+    let lastSport;
+    let created;
+    let athleteId;
+    let loading;
+    renderer.addCallback(async data => {
+        if (loading || !data?.athleteId) {
             return;
         }
-        lastRender = now;
-        if (data && data.state) {
+        if (lastSport !== sport) {
+            lastSport = sport;
+            chart._sauceLegend.render();
+        }
+        const now = Date.now();
+        if (data.athleteId !== athleteId || created !== data.created) {
+            console.info("Loading streams for:", data.athleteId);
+            loading = true;
+            athleteId = data.athleteId;
+            created = data.created;
+            let streams;
+            try {
+                streams = await common.rpc.getAthleteStreams(athleteId);
+            } finally {
+                loading = false;
+            }
+            streams = streams || {};
+            const nulls = Array.from(sauce.data.range(chart._dataPoints)).map(x => null);
             for (const x of fields) {
-                x.points.push(x.get(data));
-                while (x.points.length > dataPoints) {
-                    x.points.shift();
+                // null pad for non stream types like wbal and to compensate for missing data
+                chart._streams[x.id] = nulls.concat(streams[x.id] || []);
+            }
+        } else {
+            if (now - lastRender < 900) {
+                return;
+            }
+            if (data?.state) {
+                for (const x of fields) {
+                    chart._streams[x.id].push(x.get(data));
                 }
             }
         }
-        lineChart.setOption({
-            xAxis: [{
-                data: Array.from(sauce.data.range(dataPoints)),
-            }],
-            series: fields.map(field => ({
-                data: field.points,
-                name: typeof field.name === 'function' ? field.name() : field.name,
-                markLine: settings.markMax === field.id ? {
-                    symbol: 'none',
-                    data: [{
-                        name: field.markMin ? 'Min' : 'Max',
-                        xAxis: field.points.indexOf(sauce.data[field.markMin ? 'min' : 'max'](field.points)),
-                        label: {
-                            formatter: x => {
-                                const nbsp ='\u00A0';
-                                return [
-                                    ''.padStart(Math.max(0, 5 - x.value), nbsp),
-                                    nbsp, nbsp, // for unit offset
-                                    field.fmt(field.points[x.value]),
-                                    ''.padEnd(Math.max(0, x.value - (dataPoints - 1) + 5), nbsp)
-                                ].join('');
-                            },
-                        },
-                        emphasis: {disabled: true},
-                    }],
-                } : undefined,
-            })),
-        });
-        if (oldSport !== sport) {
-            oldSport = sport;
-            lineChart._sauceLegend.render();
+        lastRender = now;
+        for (const x of fields) {
+            while (chart._streams[x.id].length > chart._dataPoints) {
+                chart._streams[x.id].shift();
+            }
         }
+        chart.setOption({
+            series: fields.map(field => {
+                const points = chart._streams[field.id];
+                return {
+                    data: points,
+                    name: typeof field.name === 'function' ? field.name() : field.name,
+                    markLine: settings.markMax === field.id ? {
+                        symbol: 'none',
+                        data: [{
+                            name: field.markMin ? 'Min' : 'Max',
+                            xAxis: points.indexOf(sauce.data[field.markMin ? 'min' : 'max'](points)),
+                            label: {
+                                formatter: x => {
+                                    const nbsp ='\u00A0';
+                                    return [
+                                        ''.padStart(Math.max(0, 10 - x.value), nbsp),
+                                        nbsp, nbsp, // for unit offset
+                                        field.fmt(points[x.value]),
+                                        ''.padEnd(Math.max(0, x.value - (chart._dataPoints - 1) + 10), nbsp)
+                                    ].join('');
+                                },
+                            },
+                            emphasis: {disabled: true},
+                        }],
+                    } : undefined,
+                };
+            }),
+        });
     });
 }
 
@@ -820,7 +1017,6 @@ async function createTimeInZonesVertBars(el, sectionId, settings, renderer) {
     const echarts = await importEcharts();
     const chart = echarts.init(el, 'sauce', {renderer: 'svg'});
     chart.setOption({
-        grid: {top: '5%', left: '6%', right: '4', bottom: '3%', containLabel: true},
         tooltip: {
             className: 'ec-tooltip',
             trigger: 'axis',
@@ -833,17 +1029,37 @@ async function createTimeInZonesVertBars(el, sectionId, settings, renderer) {
             splitNumber: 2,
             minInterval: 60,
             axisLabel: {
-                formatter: fmtDur,
+                formatter: H.timer,
                 rotate: 50,
                 fontSize: '0.6em',
+                showMinLabel: false,
             }
         },
         series: [{
             type: 'bar',
             barWidth: '90%',
-            tooltip: {valueFormatter: x => fmtDur(x, {long: true})},
+            tooltip: {valueFormatter: x => fmtDur(x)},
         }],
     });
+    const _resize = chart.resize;
+    chart.resize = function() {
+        const em = Number(getComputedStyle(el).fontSize.slice(0, -2));
+        chart.setOption({
+            grid: {
+                top: 0.5 * em,
+                left: 2.4 * em,
+                right: 0.5 * em,
+                bottom: 1 * em,
+            },
+            xAxis: {
+                axisLabel: {
+                    margin: 0.3 * em,
+                }
+            }
+        });
+        return _resize.apply(this, arguments);
+    };
+    chart.resize();
     chartRefs.add(new WeakRef(chart));
     let colors;
     let athleteId;
@@ -869,7 +1085,7 @@ async function createTimeInZonesVertBars(el, sectionId, settings, renderer) {
         chart.setOption({
             ...extraOptions,
             series: [{
-                data: data.stats.power.timeInZones.map(x => ({
+                data: data.timeInPowerZones.map(x => ({
                     value: x.time,
                     itemStyle: {color: colors[x.zone].g},
                 })),
@@ -899,13 +1115,13 @@ function createTimeInZonesHorizBar(el, sectionId, settings, renderer) {
             return;
         }
         lastRender = now;
-        const zones = data.stats.power.timeInZones.filter(x => normZones.has(x.zone));
+        const zones = data.timeInPowerZones.filter(x => normZones.has(x.zone));
         const totalTime = zones.reduce((agg, x) => agg + x.time, 0);
         for (const x of zones) {
             const zoneEl = el.querySelector(`[data-zone="${x.zone}"]`);
             zoneEl.style.flexGrow = Math.round(100 * x.time / totalTime);
             zoneEl.querySelector('.extra').textContent = H.duration(
-                x.time, {short: true, seperator: ' '});
+                x.time, {short: true, separator: ' '});
         }
     });
 }
@@ -915,20 +1131,20 @@ async function createTimeInZonesPie(el, sectionId, settings, renderer) {
     const echarts = await importEcharts();
     const chart = echarts.init(el, 'sauce', {renderer: 'svg'});
     chart.setOption({
-        grid: {top: '1', left: '1', right: '1', bottom: '1'},
+        grid: {top: '1%', left: '1%', right: '1%', bottom: '1%', containLabel: true},
         tooltip: {
             className: 'ec-tooltip'
         },
         series: [{
             type: 'pie',
-            radius: ['30%', '90%'],
+            radius: ['30%', '80%'],
             minShowLabelAngle: 20,
             label: {
                 show: true,
                 position: 'inner',
             },
             tooltip: {
-                valueFormatter: x => fmtDur(x, {long: true})
+                valueFormatter: x => fmtDur(x)
             },
             emphasis: {
                 itemStyle: {
@@ -963,7 +1179,7 @@ async function createTimeInZonesPie(el, sectionId, settings, renderer) {
         }
         chart.setOption({
             series: [{
-                data: data.stats.power.timeInZones.filter(x => normZones.has(x.zone)).map(x => ({
+                data: data.timeInPowerZones.filter(x => normZones.has(x.zone)).map(x => ({
                     name: x.zone,
                     value: x.time,
                     label: {color: colors[x.zone].c.l > 0.65 ? '#000b' : '#fffb'},
@@ -982,6 +1198,37 @@ function powerZoneColors(zones, fn) {
         colors[k] = fn ? fn(c) : c;
     }
     return colors;
+}
+
+
+async function createElevationProfile(el, sectionId, settings, renderer) {
+    const worldList = await common.getWorldList();
+    const elProfile = new elevationMod.SauceElevationProfile({
+        el,
+        worldList,
+        preferRoute: settings.preferRoute,
+    });
+    chartRefs.add(new WeakRef(elProfile.chart));
+    let watchingId;
+    let courseId;
+    let initDone;
+    common.subscribe('states', states => {
+        if (initDone) {
+            elProfile.renderAthleteStates(states);
+        }
+    });
+    renderer.addCallback(async data => {
+        if (!data || !data.stats || !data.athlete) {
+            return;
+        }
+        if (data.athleteId !== watchingId || data.state.courseId !== courseId) {
+            watchingId = data.athleteId;
+            courseId = data.state.courseId;
+            elProfile.setWatching(watchingId);
+            await elProfile.setCourse(courseId);
+            initDone = true;
+        }
+    });
 }
 
 
@@ -1028,20 +1275,24 @@ async function initScreenSettings() {
         const sLen = settings.screens.length;
         sLenEl.textContent = sLen;
         const screen = settings.screens[sIndex];
-        const screenEl = (await layoutTpl({
+        activeScreenEl.replaceChildren(await layoutTpl({
             screen,
             sIndex,
             groupSpecs,
             sectionSpecs,
-            configuring: true
-        })).querySelector('.screen');
-        activeScreenEl.innerHTML = '';
-        activeScreenEl.appendChild(screenEl);
+            configuring: true,
+            settings,
+        }));
         prevBtn.classList.toggle('disabled', sIndex === 0);
         nextBtn.classList.toggle('disabled', sIndex === sLen - 1);
         delBtn.classList.toggle('disabled', sLen === 1);
     }
 
+    common.settingsStore.addEventListener('set', ev => {
+        if (ev.data.key === 'hideBackgroundIcons') {
+            renderScreen();
+        }
+    });
     document.querySelector('main header .button-group').addEventListener('click', ev => {
         const btn = ev.target.closest('.button-group .button');
         const action = btn && btn.dataset.action;
@@ -1064,7 +1315,7 @@ async function initScreenSettings() {
             renderScreen();
         } else if (action === 'delete') {
             settings.screens.splice(sIndex, 1);
-            sIndex = Math.max(0, sIndex -1);
+            sIndex = Math.max(0, sIndex - 1);
             common.settingsStore.set(null, settings);
             renderScreen();
         }
@@ -1150,23 +1401,30 @@ export async function main() {
     const content = document.querySelector('#content');
     const renderers = [];
     let curScreen;
+    let curScreenIndex = Math.max(0, Math.min(settings.screenIndex || 0, settings.screens.length));
+    let athlete;
+    if (customIdent) {
+        athlete = await common.rpc.getAthlete(customIdent);
+    }
     powerZones = await common.rpc.getPowerZones(1);
     const layoutTpl = await getTpl('watching-screen-layout');
     const persistentData = settings.screens.some(x =>
         x.sections.some(xx => sectionSpecs[xx.type].alwaysRender));
     for (const [sIndex, screen] of settings.screens.entries()) {
+        const hidden = sIndex !== curScreenIndex;
         const screenEl = (await layoutTpl({
             screen,
             sIndex,
             groupSpecs,
-            sectionSpecs
-        })).querySelector('.screen');
-        if (sIndex) {
-            screenEl.classList.add('hidden');
-        } else {
+            sectionSpecs,
+            athlete,
+            hidden,
+            settings,
+        })).firstElementChild;
+        if (!hidden) {
             curScreen = screenEl;
         }
-        content.appendChild(screenEl);
+        content.append(screenEl);
         const renderer = new common.Renderer(screenEl, {
             id: screen.id,
             fps: null,
@@ -1187,34 +1445,8 @@ export async function main() {
                     const mapping = [];
                     for (const [i, fieldEl] of groupEl.querySelectorAll('[data-field]').entries()) {
                         const id = fieldEl.dataset.field;
-                        mapping.push({id, default: Number(fieldEl.dataset.default || i)});
-                    }
-                    const groupSpec = groupSpecs[groupEl.dataset.groupType];
-                    renderer.addRotatingFields({
-                        el: groupEl,
-                        mapping,
-                        fields: groupSpec.fields,
-                    });
-                    if (typeof groupSpec.title === 'function') {
-                        const titleEl = groupEl.querySelector('.group-title');
-                        renderer.addCallback(() => {
-                            const title = groupSpec.title() || '';
-                            if (common.softInnerHTML(titleEl, title)) {
-                                titleEl.title = title;
-                            }
-                        });
-                    }
-                }
-            } else if (baseType === 'single-data-field') {
-                const groups = [
-                    sectionEl.dataset.groupId ? sectionEl : null,
-                    ...sectionEl.querySelectorAll('[data-group-id]')
-                ].filter(x => x);
-                for (const groupEl of groups) {
-                    const mapping = [];
-                    for (const [i, fieldEl] of groupEl.querySelectorAll('[data-field]').entries()) {
-                        const id = fieldEl.dataset.field;
-                        mapping.push({id, default: Number(fieldEl.dataset.default || i)});
+                        const def = fieldEl.dataset.default || i;
+                        mapping.push({id, default: isNaN(def) ? def : Number(def)});
                     }
                     const groupSpec = groupSpecs[groupEl.dataset.groupType];
                     renderer.addRotatingFields({
@@ -1239,11 +1471,7 @@ export async function main() {
                         sectionEl.dataset.sectionId,
                         sectionSettings);
                     bindLineChart(lineChart, renderer, sectionSettings);
-                } else {
-                    console.error("Invalid chart type:", section.type);
-                }
-            } else if (baseType === 'time-in-zones') {
-                if (section.type === 'time-in-zones') {
+                } else if (section.type === 'time-in-zones') {
                     const el = sectionEl.querySelector('.zones-holder');
                     const id = sectionEl.dataset.sectionId;
                     if (sectionSettings.style === 'vert-bars') {
@@ -1253,8 +1481,12 @@ export async function main() {
                     } else if (sectionSettings.style === 'horiz-bar') {
                         createTimeInZonesHorizBar(el, id, sectionSettings, renderer);
                     }
+                } else if (section.type === 'elevation-profile') {
+                    const el = sectionEl.querySelector('.elevation-profile-holder');
+                    const id = sectionEl.dataset.sectionId;
+                    createElevationProfile(el, id, sectionSettings, renderer);
                 } else {
-                    console.error("Invalid time-in-zones type:", section.type);
+                    console.error("Invalid elevation-profile type:", section.type);
                 }
             } else {
                 console.error("Invalid base type:", baseType);
@@ -1267,36 +1499,24 @@ export async function main() {
     const bbSelector = settings.alwaysShowButtons ? '.fixed.button-bar' : '#titlebar .button-bar';
     const prevBtn = document.querySelector(`${bbSelector} .button.prev-screen`);
     const nextBtn = document.querySelector(`${bbSelector} .button.next-screen`);
-    prevBtn.classList.add('disabled');
-    if (settings.screens.length === 1) {
-        nextBtn.classList.add('disabled');
-    }
-    prevBtn.addEventListener('click', ev => {
-        if (!curScreen.previousElementSibling) {
+    prevBtn.classList.toggle('disabled', curScreenIndex === 0);
+    nextBtn.classList.toggle('disabled', curScreenIndex === settings.screens.length - 1);
+    const switchScreen = dir => {
+        const target = dir > 0 ? curScreen.nextElementSibling : curScreen.previousElementSibling;
+        if (!target) {
             return;
         }
         curScreen.classList.add('hidden');
-        curScreen = curScreen.previousElementSibling;
-        curScreen.classList.remove('hidden');
-        nextBtn.classList.remove('disabled');
+        target.classList.remove('hidden');
+        curScreen = target;
+        settings.screenIndex = (curScreenIndex += dir);
+        prevBtn.classList.toggle('disabled', curScreenIndex === 0);
+        nextBtn.classList.toggle('disabled', curScreenIndex === settings.screens.length - 1);
         resizeCharts();
-        if (Number(curScreen.dataset.index) === 0) {
-            prevBtn.classList.add('disabled');
-        }
-    });
-    nextBtn.addEventListener('click', ev => {
-        if (!curScreen.nextElementSibling) {
-            return;
-        }
-        curScreen.classList.add('hidden');
-        curScreen = curScreen.nextElementSibling;
-        curScreen.classList.remove('hidden');
-        prevBtn.classList.remove('disabled');
-        resizeCharts();
-        if (settings.screens.length === Number(curScreen.dataset.index) + 1) {
-            nextBtn.classList.add('disabled');
-        }
-    });
+        common.settingsStore.set(null, settings);
+    };
+    prevBtn.addEventListener('click', () => switchScreen(-1));
+    nextBtn.addEventListener('click', () => switchScreen(1));
     const resetBtn = document.querySelector(`${bbSelector} .button.reset`);
     resetBtn.addEventListener('click', ev => {
         common.rpc.resetStats();
@@ -1338,14 +1558,14 @@ export async function main() {
     });
     let athleteId;
     if (!location.search.includes('testing')) {
-        common.subscribe('athlete/watching', watching => {
-            const force = watching.athleteId !== athleteId;
-            athleteId = watching.athleteId;
-            sport = watching.state.sport || 'cycling';
-            eventMetric = watching.remainingMetric;
-            eventSubgroup = getEventSubgroup(watching.state.eventSubgroupId);
+        common.subscribe(`athlete/${athleteIdent}`, ad => {
+            const force = ad.athleteId !== athleteId;
+            athleteId = ad.athleteId;
+            sport = ad.state.sport || 'cycling';
+            eventMetric = ad.remainingMetric;
+            eventSubgroup = getEventSubgroup(ad.state.eventSubgroupId);
             for (const x of renderers) {
-                x.setData(watching);
+                x.setData(ad);
                 if (x.backgroundRender || !x._contentEl.classList.contains('hidden')) {
                     x.render({force});
                 }
@@ -1365,18 +1585,16 @@ export async function main() {
                         speed: Math.random() * 100,
                     },
                     stats: {
-                        power: {
-                            timeInZones: [
-                                {zone: 'Z1', time: 2 + 100 * Math.random()},
-                                {zone: 'Z2', time: 2 + 100 * Math.random()},
-                                {zone: 'Z3', time: 2 + 100 * Math.random()},
-                                {zone: 'Z4', time: 2 + 100 * Math.random()},
-                                {zone: 'Z5', time: 2 + 100 * Math.random()},
-                                {zone: 'Z6', time: 2 + 100 * Math.random()},
-                                {zone: 'Z7', time: 2 + 100 * Math.random()},
-                                //{zone: 'SS', time: 2 + 100 * Math.random()},
-                            ]
-                        }
+                        timeInPowserZones: [
+                            {zone: 'Z1', time: 2 + 100 * Math.random()},
+                            {zone: 'Z2', time: 2 + 100 * Math.random()},
+                            {zone: 'Z3', time: 2 + 100 * Math.random()},
+                            {zone: 'Z4', time: 2 + 100 * Math.random()},
+                            {zone: 'Z5', time: 2 + 100 * Math.random()},
+                            {zone: 'Z6', time: 2 + 100 * Math.random()},
+                            {zone: 'Z7', time: 2 + 100 * Math.random()},
+                            //{zone: 'SS', time: 2 + 100 * Math.random()},
+                        ]
                     }
                 });
                 if (x.backgroundRender || !x._contentEl.classList.contains('hidden')) {

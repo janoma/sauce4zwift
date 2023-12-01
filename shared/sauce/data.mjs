@@ -216,10 +216,7 @@ export function *range(startOrCount, stop, step) {
 export class Pad extends Number {}
 
 
-export class Zero extends Pad {}
-
-
-export class Break extends Zero {
+export class Break extends Pad {
     constructor(pad) {
         super(0);
         this.pad = pad;
@@ -237,7 +234,7 @@ function getSoftPad(n) {
     return _padCache.get(sig);
 }
 
-const ZERO = new Zero();
+const ZERO = new Pad(0);
 
 
 export class RollingAverage {
@@ -245,6 +242,7 @@ export class RollingAverage {
         this.period = period || undefined;
         this.idealGap = options.idealGap;
         this.maxGap = options.maxGap;
+        this._padThreshold = this.idealGap ? this.idealGap * 1.61803 : null;
         this._active = options.active;
         this._ignoreZeros = options.ignoreZeros;
         this._times = [];
@@ -358,7 +356,7 @@ export class RollingAverage {
             +value || (
                 value != null &&
                 !Number.isNaN(value) &&
-                (!this._ignoreZeros && !(value instanceof Zero))
+                (!this._ignoreZeros && !(value instanceof Pad))
             )
         );
     }
@@ -387,7 +385,7 @@ export class RollingAverage {
                         this._add(prevTS + i, ZERO);
                     }
                 }
-            } else if (this.idealGap && gap > (this.idealGap * 2)) {
+            } else if (this.idealGap && gap > this._padThreshold) {
                 for (let i = this.idealGap; i < gap; i += this.idealGap) {
                     this._add(prevTS + i, getSoftPad(value));
                 }
@@ -480,12 +478,14 @@ export class RollingAverage {
         return this._length - this._offt;
     }
 
-    values() {
-        return this._values.slice(this._offt, this._length);
+    values(offt=0, len) {
+        const l = len === undefined ? this._length : Math.min(this._length, this._offt + len);
+        return this._values.slice(this._offt + offt, l);
     }
 
-    times() {
-        return this._times.slice(this._offt, this._length);
+    times(offt=0, len) {
+        const l = len === undefined ? this._length : Math.min(this._length, this._offt + len);
+        return this._times.slice(this._offt + offt, l);
     }
 
     timeAt(i) {
