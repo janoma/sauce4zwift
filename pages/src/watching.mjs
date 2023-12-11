@@ -136,6 +136,7 @@ let eventMetric;
 let eventSubgroup;
 let sport = 'cycling';
 let powerZones;
+let athleteFTP;
 
 const sectionSpecs = {
     'large-data-fields': {
@@ -615,60 +616,7 @@ const groupSpecs = {
 
 };
 
-const smallSpace = '\u0020';
-const lineChartFields = [{
-    id: 'power',
-    name: 'Power',
-    color: '#46f',
-    domain: [0, 700],
-    rangeAlpha: [0.4, 1],
-    get: x => x.state.power || 0,
-    fmt: x => H.power(x, {separator: smallSpace, suffix: true}),
-}, {
-    id: 'hr',
-    name: 'HR',
-    color: '#e22',
-    domain: [70, 190],
-    rangeAlpha: [0.1, 0.7],
-    get: x => x.state.heartrate || 0,
-    fmt: x => H.number(x) + ' bpm',
-}, {
-    id: 'speed',
-    name: speedLabel,
-    color: '#4e3',
-    domain: [0, 100],
-    rangeAlpha: [0.1, 0.8],
-    get: x => x.state.speed || 0,
-    fmt: x => fmtPace(x, {separator: smallSpace, suffix: true}),
-}, {
-    id: 'cadence',
-    name: 'Cadence',
-    color: '#ee3',
-    domain: [0, 140],
-    rangeAlpha: [0.1, 0.8],
-    get: x => x.state.cadence || 0,
-    fmt: x => H.number(x) + (sport === 'running' ? ' spm' : ' rpm'),
-}, {
-    id: 'draft',
-    name: 'Draft',
-    color: '#e88853',
-    domain: [0, 300],
-    rangeAlpha: [0.1, 0.9],
-    get: x => x.state.draft || 0,
-    fmt: x => H.power(x, {separator: smallSpace, suffix: true}),
-}, {
-    id: 'wbal',
-    name: 'W\'bal',
-    color: '#4ee',
-    outColor: '#f7b',
-    visualMin: -5000,
-    domain: [0, 22000],
-    rangeAlpha: [0.1, 0.8],
-    get: x => x.wBal || 0,
-    fmt: x => H.number(x / 1000, {precision: 1, fixed: true, separator: smallSpace, suffix: 'kJ'}),
-    markMin: true,
-}];
-
+const lineChartFields = ['power', 'hr', 'speed', 'cadence', 'draft', 'wbal'];
 
 function curLap(x) {
     return x && x.lap;
@@ -854,39 +802,62 @@ async function importEcharts() {
 }
 
 
-async function createLineChart(el, sectionId, settings) {
+function calcPowerZonesGraphics(chart) {
+    const children = [];
+    const graphic = [{type: 'group', silent: true, id: 'power-zones', children}];
+    const powerSeries = chart.getOption().series.find(x => x.id === 'power'); // XXX pretty heavy..
+    const visible = !chart._sauceLegend.hidden.has('power');
+    if (!powerSeries || !powerSeries.data || !powerZones || !athleteFTP || !visible) {
+        return graphic;
+    }
+    const pieces = chart._chartsModule.getPowerFieldZones(powerSeries.data, powerZones, athleteFTP);
+    const chartHeight = chart.getHeight();
+    for (const x of pieces) {
+        const startPx = chart.convertToPixel({xAxisIndex: 0}, x.start);
+        const widthPx = chart.convertToPixel({xAxisIndex: 0}, x.end) - startPx;
+        const top = x.zone.to ? chart.convertToPixel({yAxisId: 'power'}, x.zone.to * athleteFTP * 1.05) : 0;
+        children.push({
+            type: 'rect',
+            z: 100,
+            shape: {
+                x: startPx,
+                y: top,
+                width: widthPx,
+                height: chartHeight - top,
+            },
+            style: {
+                stroke: 'magic-zones-graphics',
+                fill: {
+                    type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [
+                        {offset: 0.1, color: x.color.alpha(1).lighten(0).toString()},
+                        {offset: 1, color: x.color.alpha(0.2).lighten(0).toString()}
+                    ],
+                },
+            }
+        });
+    }
+    return graphic;
+}
+
+
+let clippyHackCounter = 0;
+async function createLineChart(el, sectionId, settings, renderer) {
     const echarts = await importEcharts();
-    const charts = await import('./charts.mjs');
-    const fields = lineChartFields.filter(x => settings[x.id + 'En']);
     const chart = echarts.init(el, 'sauce', {renderer: 'svg'});
-    const visualMapCommon = {
-        show: false,
-        type: 'continuous',
-        hoverLink: false,
-    };
-    const seriesCommon = {
-        type: 'line',
-        animation: false,  // looks better and saves gobs of CPU
-        showSymbol: false,
-        emphasis: {disabled: true},
-        areaStyle: {},
-    };
-    chart._dataPointsLen = 0;
-    chart._streams = {};
-    const options = {
+    const charts = chart._chartsModule = await import('./charts.mjs');
+    const fields = lineChartFields.filter(x => settings[x + 'En']).map(x => charts.streamFields[x]);
+    const chartEl = chart.getDom();
+    let streamsCache;
+    let dataPointsLen = 0;
+    let lastSport;
+    let lastCreated;
+    let athleteId;
+    let loading;
+    const clippyHackId = clippyHackCounter++;
+
+    chart.setOption({
         color: fields.map(f => f.color),
-        visualMap: fields.map((f, i) => ({
-            ...visualMapCommon,
-            id: f.id,
-            seriesIndex: i,
-            range: f.outColor ? f.domain : undefined,
-            min: f.visualMin || f.domain[0],
-            max: f.visualMax || f.domain[1],
-            inRange: {colorAlpha: f.rangeAlpha},
-            outOfRange: f.outColor ?
-                {color: f.outColor, colorAlpha: [0.8, 0]} :
-                undefined,
-        })),
+        visualMap: charts.getStreamFieldVisualMaps(fields),
         legend: {show: false},
         tooltip: {
             className: 'ec-tooltip',
@@ -896,11 +867,16 @@ async function createLineChart(el, sectionId, settings) {
         xAxis: [{show: false, data: []}],
         yAxis: fields.map(f => ({
             show: false,
+            id: f.id,
             min: x => Math.min(f.domain[0], x.min),
             max: x => Math.max(f.domain[1], x.max),
         })),
         series: fields.map((f, i) => ({
-            ...seriesCommon,
+            type: 'line',
+            animation: false,  // looks better and saves gobs of CPU
+            showSymbol: false,
+            emphasis: {disabled: true},
+            areaStyle: {}, // fill
             id: f.id,
             name: typeof f.name === 'function' ? f.name() : f.name,
             z: fields.length - i + 1,
@@ -908,15 +884,28 @@ async function createLineChart(el, sectionId, settings) {
             tooltip: {valueFormatter: f.fmt},
             lineStyle: {color: f.color},
         })),
-    };
+    });
+
+    chart._sauceLegend = new charts.SauceLegend({
+        el: el.nextElementSibling,
+        chart,
+        hiddenStorageKey: `watching-hidden-graph-p${sectionId}`,
+    });
+
     const _resize = chart.resize;
     chart.resize = function() {
         const width = el.clientWidth;
         if (width) {
             const em = Number(getComputedStyle(el).fontSize.slice(0, -2));
-            chart._dataPointsLen = settings.dataPoints || Math.ceil(width);
+            dataPointsLen = settings.dataPoints || Math.ceil(width);
+            if (streamsCache && streamsCache.time.length < dataPointsLen) {
+                const nulls = Array.from(sauce.data.range(dataPointsLen - streamsCache.time.length))
+                    .map(x => null);
+                for (const x of Object.values(streamsCache)) {
+                    x.unshift(...nulls);
+                }
+            }
             chart.setOption({
-                xAxis: [{data: Array.from(sauce.data.range(chart._dataPointsLen))}],
                 grid: {
                     top: 1 * em,
                     left: 0.5 * em,
@@ -924,116 +913,31 @@ async function createLineChart(el, sectionId, settings) {
                     bottom: 0.1 * em,
                 },
             });
+            chart.renderStreams();
         }
         return _resize.apply(this, arguments);
     };
-    chart.setOption(options);
-    chart.resize();
-    chart._sauceLegend = new charts.SauceLegend({
-        el: el.nextElementSibling,
-        chart,
-        hiddenStorageKey: `watching-hidden-graph-p${sectionId}`,
-    });
-    chartRefs.add(new WeakRef(chart));
-    return chart;
-}
 
-
-function bindLineChart(chart, renderer, settings) {
-    const fields = lineChartFields.filter(x => settings[x.id + 'En']);
-    let lastRender = 0;
-    let lastSport;
-    let created;
-    let athleteId;
-    let loading;
-    renderer.addCallback(async data => {
-        if (loading || !data?.athleteId) {
+    chart.renderStreams = () => {
+        if (!streamsCache) {
             return;
         }
-        if (lastSport !== sport) {
-            lastSport = sport;
-            chart._sauceLegend.render();
-        }
-        const dataLen = chart._dataPointsLen;
-        const now = Date.now();
-        if (data.athleteId !== athleteId || created !== data.created) {
-            console.info("Loading streams for:", data.athleteId);
-            loading = true;
-            athleteId = data.athleteId;
-            created = data.created;
-            let streams;
-            try {
-                streams = await common.rpc.getAthleteStreams(athleteId);
-            } finally {
-                loading = false;
-            }
-            streams = streams || {};
-            const nulls = Array.from(sauce.data.range(dataLen)).map(x => null);
-            for (const x of fields) {
-                // null pad for non stream types like wbal and to compensate for missing data
-                chart._streams[x.id] = nulls.concat(streams[x.id] || []);
-            }
-        } else {
-            if (now - lastRender < 900) {
-                return;
-            }
-            if (data?.state) {
-                for (const x of fields) {
-                    chart._streams[x.id].push(x.get(data));
-                }
+        const maxCacheSize = Math.max(2000, dataPointsLen * 2);
+        if (streamsCache.time.length > maxCacheSize + 100) {
+            for (const x of Object.values(streamsCache)) {
+                x.splice(0, x.length - maxCacheSize);
             }
         }
-        lastRender = now;
-        // Keep local data buffered for resizes (within reason)..
-        const maxStreamLen = Math.max(2000, dataLen * 2);
-        if (powerZones && data.athlete.ftp) {
-            const pieces = [];
-            let curZone;
-            let gte = 0;
-            let lt = 0;
-            const colors = powerZoneColors(powerZones);
-            for (const [i, x] of chart._streams.power.slice(-dataLen).entries()) {
-                const xPct = x / data.athlete.ftp;
-                let zone;
-                for (const z of powerZones) {
-                    if (xPct >= z.from && (!z.to || xPct < z.to)) {
-                        zone = z;
-                        break;
-                    }
-                }
-                if (zone !== curZone) {
-                    if (curZone) {
-                        pieces.push({gte, lt, color: colors[curZone.zone].toString()});
-                    }
-                    gte = i;
-                    lt = i + 1;
-                    curZone = zone;
-                } else {
-                    lt++;
-                }
-            }
-            pieces.push({gte, color: colors[curZone.zone].toString()});
-            chart.setOption({
-                visualMap: {
-                    dimension: 0,
-                    id: 'power',
-                    seriesIndex: 0,
-                    type: 'piecewise',
-                    show: false,
-                    pieces,
-                }
-            }, {notMerge: false});
-        }
+        const hasPowerZones = powerZones && athleteFTP && fields.find(x => x.id === 'power') &&
+            !chart._sauceLegend.hidden.has('power');
         chart.setOption({
+            xAxis: [{data: streamsCache.time.slice(-dataPointsLen)}],
             series: fields.map(field => {
-                const stream = chart._streams[field.id];
-                if (stream.length > maxStreamLen + 100) {
-                    stream.splice(0, stream.length - maxStreamLen);
-                }
-                const points = stream.slice(-dataLen);
+                const points = streamsCache[field.id].slice(-dataPointsLen);
                 return {
                     data: points,
                     name: typeof field.name === 'function' ? field.name() : field.name,
+                    areaStyle: field.id === 'power' && hasPowerZones ? {color: 'magic-zones'} : {},
                     markLine: settings.markMax === field.id ? {
                         symbol: 'none',
                         data: [{
@@ -1046,7 +950,7 @@ function bindLineChart(chart, renderer, settings) {
                                         ''.padStart(Math.max(0, 10 - x.value), nbsp),
                                         nbsp, nbsp, // for unit offset
                                         field.fmt(points[x.value]),
-                                        ''.padEnd(Math.max(0, x.value - (dataLen - 1) + 10), nbsp)
+                                        ''.padEnd(Math.max(0, x.value - (dataPointsLen - 1) + 10), nbsp)
                                     ].join('');
                                 },
                             },
@@ -1055,8 +959,76 @@ function bindLineChart(chart, renderer, settings) {
                     } : undefined,
                 };
             }),
-        });
+        }, {lazyUpdate: true}); // lazy because we follow immediatly with another setOption
+        chart.setOption({graphic: calcPowerZonesGraphics(chart)}, {replaceMerge: 'graphic'});
+    };
+
+    chart.on('rendered', () => {
+        const pathEl = chartEl.querySelector('path[fill="magic-zones"]');
+        if (pathEl) {
+            if (!pathEl.id) {
+                pathEl.id = `path-hack-${clippyHackId}`;
+                pathEl.style.setProperty('fill', 'transparent');
+            }
+            let clipEl = chartEl.querySelector(`clipPath#clip-hack-${clippyHackId}`);
+            if (!clipEl) {
+                clipEl = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath');
+                clipEl.id = `clip-hack-${clippyHackId}`;
+                const useEl = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+                useEl.setAttribute('href', `#${pathEl.id}`);
+                clipEl.appendChild(useEl);
+                chartEl.querySelector('defs').appendChild(clipEl);
+            }
+            for (const x of chartEl.querySelectorAll('path[stroke="magic-zones-graphics"]')) {
+                x.setAttribute('clip-path', `url(#${clipEl.id})`);
+                x.removeAttribute('stroke');
+            }
+        }
     });
+    common.subscribe(`streams/${athleteIdent}`, streams => {
+        if (!streamsCache) {
+            return; // early start, wait for renderer callback to fetch full streams
+        }
+        streamsCache.time.push(...streams.time);
+        for (const x of fields) {
+            streamsCache[x.id].push(...streams[x.id]);
+        }
+        if (common.isVisible() && (!chartEl.checkVisibility || chartEl.checkVisibility())) {
+            chart.renderStreams();
+        }
+    });
+    renderer.addCallback(async data => {
+        if (loading || !data?.athleteId) {
+            return;
+        }
+        if (lastSport !== sport) {
+            lastSport = sport;
+            charts.setSport(sport);
+            chart._sauceLegend.render();
+        }
+        if (data.athleteId !== athleteId || lastCreated !== data.created) {
+            console.info("Loading streams for:", data.athleteId);
+            loading = true;
+            athleteId = data.athleteId;
+            lastCreated = data.created;
+            let streams = {};
+            try {
+                streams = await common.rpc.getAthleteStreams(athleteId);
+            } finally {
+                loading = false;
+            }
+            streamsCache = {};
+            for (const x of fields) {
+                streamsCache[x.id] = streams[x.id];
+            }
+            streamsCache.time = streams.time;
+            chart.resize();
+        }
+    });
+
+    chart.resize();
+    chartRefs.add(new WeakRef(chart));
+    return chart;
 }
 
 
@@ -1336,7 +1308,7 @@ async function initScreenSettings() {
     }
 
     common.settingsStore.addEventListener('set', ev => {
-        if (ev.data.key === 'hideBackgroundIcons') {
+        if (['hideBackgroundIcons', 'horizMode'].includes(ev.data.key)) {
             renderScreen();
         }
     });
@@ -1448,7 +1420,7 @@ export async function main() {
     const content = document.querySelector('#content');
     const renderers = [];
     let curScreen;
-    let curScreenIndex = Math.max(0, Math.min(settings.screenIndex || 0, settings.screens.length));
+    let curScreenIndex = Math.max(0, Math.min(settings.screenIndex || 0, settings.screens.length - 1));
     let athlete;
     if (customIdent) {
         athlete = await common.rpc.getAthlete(customIdent);
@@ -1501,7 +1473,8 @@ export async function main() {
                         mapping,
                         fields: groupSpec.fields,
                     });
-                    if (typeof groupSpec.title === 'function') {
+                    if (typeof groupSpec.title === 'function' && !sectionSettings.customTitle &&
+                        !sectionSettings.hideTitle) {
                         const titleEl = groupEl.querySelector('.group-title');
                         renderer.addCallback(() => {
                             const title = groupSpec.title() || '';
@@ -1513,11 +1486,8 @@ export async function main() {
                 }
             } else if (baseType === 'chart') {
                 if (section.type === 'line-chart') {
-                    const lineChart = await createLineChart(
-                        sectionEl.querySelector('.chart-holder.ec'),
-                        sectionEl.dataset.sectionId,
-                        sectionSettings);
-                    bindLineChart(lineChart, renderer, sectionSettings);
+                    await createLineChart(sectionEl.querySelector('.chart-holder.ec'),
+                                          sectionEl.dataset.sectionId, sectionSettings, renderer);
                 } else if (section.type === 'time-in-zones') {
                     const el = sectionEl.querySelector('.zones-holder');
                     const id = sectionEl.dataset.sectionId;
@@ -1607,6 +1577,7 @@ export async function main() {
         sport = ad.state.sport || 'cycling';
         eventMetric = ad.remainingMetric;
         eventSubgroup = getEventSubgroup(ad.state.eventSubgroupId);
+        athleteFTP = ad.athlete?.ftp;
         for (const x of renderers) {
             x.setData(ad);
             if (x.backgroundRender || !x._contentEl.classList.contains('hidden')) {
