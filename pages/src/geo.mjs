@@ -2,6 +2,7 @@ import * as common from './common.mjs';
 import * as map from './map.mjs';
 import * as elevation from './elevation.mjs';
 import * as fields from './fields.mjs';
+import * as data from '/shared/sauce/data.mjs';
 
 common.enableSentry();
 
@@ -32,11 +33,19 @@ common.settingsStore.setDefault({
 });
 
 const settings = common.settingsStore.get();
+const url = new URL(location);
+const courseSelect = document.querySelector('#titlebar select[name="course"]');
+const routeSelect = document.querySelector('#titlebar select[name="route"]');
+const demoState = {};
 
+let worldList;
+let routesList;
 let watchdog;
 let inGame;
 let zwiftMap;
 let elProfile;
+let courseId = Number(url.searchParams.get('course')) || undefined;
+let routeId = Number(url.searchParams.get('route')) || undefined;
 
 
 function setBackground() {
@@ -63,7 +72,7 @@ function getSetting(key, def) {
 }
 
 
-function createZwiftMap({worldList}) {
+function createZwiftMap() {
     const opacity = 1 - 1 / (100 / (settings.transparency || 0));
     const autoCenter = getSetting('autoCenter', true);
     const zm = new map.SauceZwiftMap({
@@ -82,13 +91,6 @@ function createZwiftMap({worldList}) {
         zoomPriorityTilt: getSetting('zoomPriorityTilt', true),
         preferRoute: settings.routeProfile !== false,
     });
-    let settingsSaveTimeout;
-    zm.addEventListener('zoom', ev => {
-        clearTimeout(settingsSaveTimeout);
-        settings.zoom = Number(ev.zoom.toFixed(2));
-        settingsSaveTimeout = setTimeout(() => common.settingsStore.set(null, settings), 100);
-    });
-
     const autoCenterBtn = document.querySelector('.map-controls .button.toggle-auto-center');
     const autoHeadingBtn = document.querySelector('.map-controls .button.toggle-auto-heading');
 
@@ -143,7 +145,7 @@ function createZwiftMap({worldList}) {
 }
 
 
-function createElevationProfile({worldList}) {
+function createElevationProfile() {
     const el = document.querySelector('.elevation-profile');
     if (settings.profileHeight) {
         el.style.setProperty('--profile-height', settings.profileHeight / 100);
@@ -165,14 +167,35 @@ function setWatching(id) {
 
 async function initialize() {
     const ad = await common.rpc.getAthleteData('self');
-    inGame = !!ad;
+    inGame = !!ad && ad.age < 15000;
     if (!inGame) {
-        console.info("User not active, starting demo mode...");
-        zwiftMap.setCourse(6);
-        if (elProfile) {
-            elProfile.setCourse(6);
+        if (!demoState.intervalId) {
+            demoState.intervalId = true; // lock
+            console.info("User not active: Starting demo mode...");
+            if (elProfile) {
+                elProfile.clear();
+            }
+            const randomCourseId = worldList[worldList.length * Math.random() | 0].courseId;
+            let heading = 0;
+            demoState.transitionDurationSave = zwiftMap.getTransitionDuration();
+            demoState.zoomSave = zwiftMap.zoom;
+            zwiftMap.setZoom(0.2, {disableEvent: true});
+            await zwiftMap.setCourse(randomCourseId);
+            if (demoState.intervalId === true) {  // could have been cancelled during await
+                zwiftMap.setHeading(heading += 5);
+                zwiftMap.setTransitionDuration(1100);
+                demoState.intervalId = setInterval(() => {
+                    zwiftMap.setHeading(heading += 5);
+                }, 1000);
+            }
         }
         return;
+    } else if (demoState.intervalId) {
+        console.info("User detected in game: Ending demo mode.");
+        clearInterval(demoState.intervalId);
+        demoState.intervalId = null;
+        zwiftMap.setTransitionDuration(demoState.transitionDurationSave);
+        zwiftMap.setZoom(demoState.zoomSave, {disableEvent: true});
     }
     zwiftMap.setAthlete(ad.athleteId);
     if (elProfile) {
@@ -195,6 +218,82 @@ async function initialize() {
         }
         if (elProfile) {
             await elProfile.renderAthleteStates([ad.state]);
+        }
+    }
+}
+
+
+function centerMap(positions, options) {
+    const xMin = data.min(positions.map(x => x[0]));
+    const yMin = data.min(positions.map(x => x[1]));
+    const xMax = data.max(positions.map(x => x[0]));
+    const yMax = data.max(positions.map(x => x[1]));
+    zwiftMap.setDragOffset([0, 0]);
+    zwiftMap.setBounds([xMin, yMax], [xMax, yMin], options);
+}
+
+
+const _routeHighlights = [];
+async function applyRoute() {
+    if (routeId != null) {
+        url.searchParams.set('route', routeId);
+    } else {
+        url.searchParams.delete('route');
+    }
+    history.replaceState({}, '', url);
+    while (_routeHighlights.length) {
+        _routeHighlights.pop().elements.forEach(x => x.remove());
+    }
+    routeSelect.replaceChildren();
+    routeSelect.insertAdjacentHTML('beforeend', `<option value disabled selected>Route</option>`);
+    for (const x of routesList) {
+        if (x.courseId !== courseId) {
+            continue;
+        }
+        routeSelect.insertAdjacentHTML('beforeend', `
+            <option ${x.id === routeId ? 'selected' : ''}
+                    value="${x.id}">${common.stripHTML(x.name)}</option>`);
+    }
+    if (routeId != null) {
+        const route = await common.getRoute(routeId);
+        const path = route.curvePath;
+        _routeHighlights.push(
+            zwiftMap.addHighlightPath(path, `route-1-${route.id}`, {width: 5, color: '#0004'}),
+            zwiftMap.addHighlightPath(path, `route-2-${route.id}`, {width: 1.2, color: 'black'}),
+            zwiftMap.addHighlightPath(path, `route-3-${route.id}`, {width: 0.5, color: 'gold'}),
+        );
+        centerMap(route.curvePath.flatten(1/3));
+        if (elProfile) {
+            await elProfile.setRoute(routeId);
+        }
+    } else {
+        zwiftMap.setVerticalOffset(0);
+        zwiftMap.setDragOffset([0, 0]);
+        zwiftMap.setZoom(0.2);
+        if (elProfile) {
+            elProfile.clear();
+        }
+    }
+}
+
+
+async function applyCourse() {
+    if (courseId != null) {
+        url.searchParams.set('course', courseId);
+    } else {
+        url.searchParams.delete('course');
+    }
+    history.replaceState({}, '', url);
+    courseSelect.replaceChildren();
+    for (const x of worldList) {
+        courseSelect.insertAdjacentHTML('beforeend', `
+            <option ${x.courseId === courseId ? 'selected' : ''}
+                    value="${x.courseId}">${common.stripHTML(x.name)}</option>`);
+    }
+    if (courseId != null) {
+        await zwiftMap.setCourse(courseId);
+        if (elProfile) {
+            await elProfile.setCourse(courseId);
         }
     }
 }
@@ -226,69 +325,54 @@ export async function main() {
             return ['ev', 'game-laps', 'progress', 'rt', 'el', 'grade', 'altitude'].includes(type);
         })
     });
-    const worldList = await common.getWorldList();
-    zwiftMap = createZwiftMap({worldList});
+    routeSelect.addEventListener('change', async ev => {
+        routeId = Number(routeSelect.value);
+        await applyRoute();
+    });
+    courseSelect.addEventListener('change', async ev => {
+        const id = Number(courseSelect.value);
+        if (id === courseId) {
+            console.debug("debounce course change");
+            return;
+        }
+        courseId = id;
+        routeId = undefined;
+        await applyCourse();
+        await applyRoute();
+    });
+    [worldList, routesList] = await Promise.all([common.getWorldList(), common.getRouteList()]);
+    routesList = Array.from(routesList).sort((a, b) => a.name < b.name ? -1 : 1);
+    zwiftMap = createZwiftMap();
     window.zwiftMap = zwiftMap;  // DEBUG
     window.MapEntity = map.MapEntity;
-    elProfile = settings.profileOverlay && createElevationProfile({worldList});
-    const urlQuery = new URLSearchParams(location.search);
-    if (urlQuery.has('testing')) {
-        const center = urlQuery.get('center');
-        const [course, road] = urlQuery.get('testing').split(',');
-        const routeId = urlQuery.get('route');
-        await zwiftMap.setCourse(+course || 6);
-        if (elProfile) {
-            await elProfile.setCourse(+course || 6);
-        }
-        if (center) {
-            zwiftMap.setCenter(center.split(',').map(Number));
-        }
-        if (routeId) {
-            const route = await zwiftMap.setActiveRoute(+routeId);
-            console.log({route});
-            for (const [i, xx] of route.checkpoints.entries()) {
-                console.log(i, xx.roadPercent.toFixed(8), xx.roadId, xx.reverse, xx.leadin, xx.forceSplit);
+    if (settings.profileOverlay) {
+        const point = zwiftMap.addPoint([0, 0], 'circle');
+        point.toggleHidden(true);
+        elProfile = createElevationProfile();
+        elProfile.chart.on('updateAxisPointer', ev => {
+            const pos = elProfile.curvePath.nodes[ev.dataIndex]?.end;
+            point.toggleHidden(!pos);
+            if (pos) {
+                point.setPosition(pos);
             }
-            let start = 0;
-            let end = route.curvePath.nodes.length;
-            const point = zwiftMap.addPoint([0, 0], 'star');
-            let hi;
-            const drawRouteHighlight = () => {
-                if (hi) {
-                    hi.elements.forEach(x => x.remove());
-                }
-                const path = route.curvePath.slice(start, end);
-                point.setPosition(route.curvePath.nodes[start].end);
-                console.debug({start, end});
-                hi = zwiftMap.addHighlightPath(path, `route-${route.id}`, {width: 0.3, color: 'yellow'});
-            };
-            window.addEventListener('keydown', ev => {
-                if (ev.key === 'ArrowRight') {
-                    end = Math.min(route.curvePath.nodes.length, end + 1);
-                } else if (ev.key === 'ArrowLeft') {
-                    end = Math.max(start, end - 1);
-                } else if (ev.key === 'ArrowUp') {
-                    start = Math.min(end, start + 1);
-                } else if (ev.key === 'ArrowDown') {
-                    start = Math.max(0, start - 1);
-                } else {
-                    return;
-                }
-                ev.preventDefault();
-                drawRouteHighlight();
-            });
-            drawRouteHighlight();
-        } else {
-            zwiftMap.setActiveRoad(+road || 0);
-        }
-        if (elProfile) {
-            if (routeId) {
-                await elProfile.setRoute(+routeId);
-            } else {
-                elProfile.setRoad(+road || 0);
-            }
-        }
+        });
+    }
+    if (courseId != null) {
+        doc.classList.add('explore');
+        doc.querySelector('#titlebar').classList.add('always-visible');
+        zwiftMap.setZoom(0.2);
+        zwiftMap.setTiltShift(0);
+        zwiftMap.setVerticalOffset(0);
+        zwiftMap._mapTransition.setDuration(1500);
+        await applyCourse();
+        await applyRoute();
     } else {
+        let settingsSaveTimeout;
+        zwiftMap.addEventListener('zoom', ev => {
+            clearTimeout(settingsSaveTimeout);
+            settings.zoom = Number(ev.zoom.toFixed(2));
+            settingsSaveTimeout = setTimeout(() => common.settingsStore.set(null, settings), 100);
+        });
         await initialize();
         common.subscribe('watching-athlete-change', async athleteId => {
             if (!inGame) {
@@ -302,7 +386,11 @@ export async function main() {
             fieldRenderer.render();
         });
         setInterval(() => {
-            inGame = performance.now() - watchdog < 10000;
+            if (inGame && performance.now() - watchdog > 10000) {
+                console.warn("Watchdog triggered by inactivity");
+                inGame = false;
+                initialize();
+            }
         }, 3333);
         common.subscribe('states', async states => {
             if (!inGame) {
@@ -312,6 +400,16 @@ export async function main() {
             zwiftMap.renderAthleteStates(states);
             if (elProfile) {
                 elProfile.renderAthleteStates(states);
+            }
+        });
+        common.subscribe('chat', chat => {
+            if (chat.muted) {
+                console.debug("Ignoring muted chat message");
+                return;
+            }
+            const ent = zwiftMap.getEntity(chat.from);
+            if (ent) {
+                ent.addChatMessage(chat);
             }
         });
     }

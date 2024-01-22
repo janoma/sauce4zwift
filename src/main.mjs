@@ -76,17 +76,6 @@ function restart() {
 rpc.register(restart);
 
 
-try {
-    storage.get(0);
-} catch(e) {
-    quiting = true;
-    console.error('Storage error:', e);
-    Promise.all([
-        storage.reset(),
-        electron.dialog.showErrorBox('Storage error. Resetting database...', '' + e)
-    ]).finally(() => quit(1));
-}
-
 electron.app.on('second-instance', (ev,_, __, {type, ...args}) => {
     if (type === 'quit') {
         console.warn("Another instance requested us to quit.");
@@ -484,7 +473,14 @@ class SauceApp extends EventEmitter {
             this.gameConnection = gameConnection; // debug
         }
         rpcSources.gameConnection = gameConnection || new EventEmitter();
-        this.statsProc = new StatsProcessor({zwiftAPI, gameMonitor, gameConnection, args});
+        this.statsProc = new StatsProcessor({
+            app: this,
+            userDataPath: userDataPath(),
+            zwiftAPI,
+            gameMonitor,
+            gameConnection,
+            args
+        });
         this.statsProc.start();
         rpcSources.stats = this.statsProc;
         rpcSources.app = this;
@@ -609,7 +605,6 @@ async function getExclusions() {
 
 export async function main({logEmitter, logFile, logQueue, sentryAnonId,
                             loaderSettings, saveLoaderSettings, buildEnv}) {
-    const s = Date.now();
     const args = parseArgs([
         {arg: 'headless', type: 'switch',
          help: 'Do not open windows (unless required on startup)'},
@@ -634,6 +629,8 @@ export async function main({logEmitter, logFile, logQueue, sentryAnonId,
         quit();
         return;
     }
+    const s = Date.now();
+    storage.initialize(userDataPath());
     if (logEmitter) {
         rpcSources['logs'] = logEmitter;
         rpc.register(() => logQueue, {name: 'getLogs'});
@@ -747,7 +744,8 @@ export async function main({logEmitter, logFile, logQueue, sentryAnonId,
         return restart();
     }
     await maybeUpdateAndRestart();
-    for (const mod of mods.init()) {
+    const modPath = path.join(electron.app.getPath('documents'), 'SauceMods');
+    for (const mod of mods.init(modPath)) {
         if (mod.isNew) {
             const enable = await windows.confirmDialog({
                 title: 'New Sauce MOD Found',

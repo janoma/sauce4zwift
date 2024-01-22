@@ -16,6 +16,28 @@ html {
             background: var(--background-color);
         }
     }
+
+    &.explore {
+        .map-controls {
+            display: none !important;
+        }
+    }
+    &:not(.explore) {
+        #titlebar .course,
+        #titlebar .route {
+            display: none;
+        }
+    }
+}
+
+select[name="course"],
+select[name="route"] {
+    &:invalid {
+        font-weight: 300;
+    }
+
+    max-width: 25vw;
+    text-overflow: ellipsis;
 }
 
 #content {
@@ -117,7 +139,7 @@ html {
         --profile-height: 0.20;
         flex: 0 0 auto;
         position: absolute;
-        font-size: clamp(16px, calc(var(--profile-height) * 42vh), 65px);
+        font-size: clamp(16px, calc(var(--profile-height) * 30vh + 10px), 60px);
         left: 0;
         bottom: 0;
         z-index: 10000;
