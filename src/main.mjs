@@ -386,7 +386,7 @@ class SauceApp extends EventEmitter {
                 platform: os.platform(),
                 release: os.release(),
                 version: os.version(),
-                productVersion: process.getSystemVersion(),
+                productVersion: process.getSystemVersion(). split(/-/, 1)[0],
                 mem: process.getSystemMemoryInfo(),
                 uptime: os.uptime(),
                 cpus: os.cpus(),
@@ -401,6 +401,7 @@ class SauceApp extends EventEmitter {
                     rows: db.prepare(`SELECT COUNT(*) as rows FROM ${t.name}`).get().rows,
                 }));
             })),
+            zwift: this.gameMonitor?.getDebugInfo(),
         };
     }
 

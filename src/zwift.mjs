@@ -9,6 +9,7 @@ import protobuf from 'protobufjs';
 import * as env from './env.mjs';
 import {fileURLToPath} from 'node:url';
 import {createRequire} from 'node:module';
+import * as losslessJSON from 'lossless-json';
 const require = createRequire(import.meta.url);
 const {XXHash32} = require('xxhash-addon');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -604,7 +605,13 @@ export class ZwiftAPI {
     }
 
     async getGameInfo() {
-        return await this.fetchJSON(`/api/game_info`, {apiVersion: '2.7'});
+        const r = await this.fetch('/api/game_info', {accept: 'json'}, {apiVersion: '2.7'});
+        return losslessJSON.parse(await r.text(), function(key, x) {
+            if (x instanceof losslessJSON.LosslessNumber) {
+                return (key !== 'id' && !Array.isArray(this) ? Number(x.value) : x.toString());
+            }
+            return x;
+        });
     }
 
     async getDropInWorldList() {
@@ -1204,7 +1211,7 @@ class UDPChannel extends NetChannel {
                         worldTimer.adjustOffset(-meanOffset);
                         this.off('inPacket', onPacket);
                         complete = true;
-                        resolve();
+                        this.emit('latency', median);
                     }
                 }
             };
@@ -1323,15 +1330,12 @@ export class GameMonitor extends events.EventEmitter {
         this._lastWorldUpdate = 0;
         this._lastTCPServer;
         this._stateRefreshDelay = this._stateRefreshDelayMin;
+        this._latency;
         worldTimer.on('offset', diff => {
             const dev = Math.abs(diff);
             if (dev > 200) {
                 // Otherwise we could be stuck watching the wrong athlete.
                 this._setWatchingWorldTime = 0;
-                /*if (dev > 5000) {
-                    // Uses worldTime for expiration.
-                    this._schedHashSeedsRefresh();
-                }*/
             }
         });
         setInterval(() => this.logStatus(), 60000);
@@ -1348,7 +1352,7 @@ export class GameMonitor extends events.EventEmitter {
         return `GameMonitor [game-id: ${this.gameAthleteId}, monitor-id: ${this.athleteId}]\n${pad}` + [
             `course-id:            ${this.courseId}`,
             `watching-id:          ${this.watchingAthleteId}`,
-            `connect-duration:     ${fmtTime(Date.now() - this.connectingTS)}`,
+            `connect-duration:     ${fmtTime(now - this.connectingTS)}`,
             `connect-count:        ${this.connectingCount}`,
             `last-game-state:      ${fmtTime(lgs)} ago`,
             `last-watching-state:  ${fmtTime(lws)} ago`,
@@ -1356,6 +1360,26 @@ export class GameMonitor extends events.EventEmitter {
             `tcp-channel:`,        `${pad}${tcpCh}`,
             `udp-channels:`,       `${pad}${this._udpChannels.map(x => x.toString()).join(`\n${pad}${pad}`)}`,
         ].join('\n    ');
+    }
+
+    getDebugInfo() {
+        const now = Date.now();
+        const lgs = this._lastGameStateUpdated ? now - this._lastGameStateUpdated : '-';
+        const lws = this._lastWatchingStateUpdated ? now - this._lastWatchingStateUpdated : '-';
+        return {
+            connectionStatus: (this._session && this._session.tcpChannel) ? 'connected' : 'disconnected',
+            active: this._udpChannels.some(x => x.active),
+            latency: this._latency,
+            connectTime: now - this.connectingTS,
+            connectCount: this.connectingCount,
+            lastGameState: lgs,
+            lastWatchingState: lws,
+            stateRefreshDelay: this._stateRefreshDelay,
+            worldTime: worldTimer.now(),
+            serverTime: worldTimer.serverNow(),
+            localTime: now,
+            worldTimeOffset: worldTimer._offt,
+        };
     }
 
     logStatus() {
@@ -1631,6 +1655,7 @@ export class GameMonitor extends events.EventEmitter {
             }
         });
         ch.on('inPacket', this.onInPacket.bind(this));
+        ch.on('latency', x => this._latency = x);
         ch.on('timeout', () => {
             console.warn("Data watchdog timeout triggered:", ch.toString());
             ch.shutdown();
