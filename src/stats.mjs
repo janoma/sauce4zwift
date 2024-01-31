@@ -483,10 +483,14 @@ export class StatsProcessor extends events.EventEmitter {
             }
         }
         if (missingProfiles.size) {
+            const updates = [];
             for (const p of await this.zwiftAPI.getProfiles(missingProfiles)) {
                 if (p) {
-                    this._updateAthlete(p.id, this._profileToAthlete(p));
+                    updates.push([p.id, this._updateAthlete(p.id, this._profileToAthlete(p))]);
                 }
+            }
+            if (updates.length) {
+                this.saveAthletes(updates);
             }
         }
         for (const x of results) {
@@ -524,17 +528,8 @@ export class StatsProcessor extends events.EventEmitter {
     }
 
     async loadOlderEvents() {
-        if (!this._lastLoadOlderEventsTS) {
-            const byTS = Array.from(this._recentEvents.values());
-            if (!byTS.length) {
-                this._lastLoadOlderEventsTS = worldTimer.serverNow();
-            } else {
-                byTS.sort((a, b) => a.ts - b.ts);
-                this._lastLoadOlderEventsTS = byTS[0].ts;
-            }
-        }
         const range = 1.5 * 3600 * 1000;
-        const to = this._lastLoadOlderEventsTS;
+        const to = this._lastLoadOlderEventsTS || worldTimer.serverNow();
         const from = to - range;
         this._lastLoadOlderEventsTS = from;
         let zEvents = await this.zwiftAPI.getEventFeed({from, to});
@@ -547,17 +542,8 @@ export class StatsProcessor extends events.EventEmitter {
     }
 
     async loadNewerEvents() {
-        if (!this._lastLoadNewerEventsTS) {
-            const byTS = Array.from(this._recentEvents.values());
-            if (!byTS.length) {
-                this._lastLoadNewerEventsTS = worldTimer.serverNow();
-            } else {
-                byTS.sort((a, b) => b.ts - a.ts);
-                this._lastLoadNewerEventsTS = byTS[0].ts;
-            }
-        }
         const range = 3 * 3600 * 1000;
-        const from = this._lastLoadNewerEventsTS;
+        const from = this._lastLoadNewerEventsTS || worldTimer.serverNow();
         const to = from + range;
         this._lastLoadNewerEventsTS = +to;
         let zEvents = await this.zwiftAPI.getEventFeed({from, to});
@@ -1019,12 +1005,16 @@ export class StatsProcessor extends events.EventEmitter {
         }
     }
 
-    async getAthlete(ident, options={}) {
+    async getAthlete(ident, {refresh, noWait, allowFetch}={}) {
         const id = this._realAthleteId(ident);
-        if (options.refresh && this.zwiftAPI.isAuthenticated()) {
+        if (allowFetch && !this.loadAthlete(id)) {
+            refresh = true;
+            noWait = false;
+        }
+        if (refresh && this.zwiftAPI.isAuthenticated()) {
             const updating = this.zwiftAPI.getProfile(id).then(p =>
                 (p && this.updateAthlete(id, this._profileToAthlete(p))));
-            if (!options.noWait) {
+            if (!noWait) {
                 await updating;
             }
         }
@@ -1924,6 +1914,12 @@ export class StatsProcessor extends events.EventEmitter {
     async __zwiftMetaSync() {
         let addedEventsCount = 0;
         const zEvents = await this.zwiftAPI.getEventFeed();
+        if (zEvents.length) {
+            this._lastLoadOlderEventsTS = Math.min(this._lastLoadOlderEventsTS || Infinity,
+                                                   zEvents.at(0).eventStart);
+            this._lastLoadNewerEventsTS = Math.max(this._lastLoadNewerEventsTS || -Infinity,
+                                                   zEvents.at(-1).eventStart);
+        }
         for (const x of zEvents) {
             addedEventsCount += !this._recentEvents.has(x.id);
             this._addEvent(x);
@@ -1934,7 +1930,7 @@ export class StatsProcessor extends events.EventEmitter {
             this._addMeetup(x);
         }
         await this.refreshEventSignups();
-        let backoff = 100;
+        let backoff = 10;
         let absent = new Set(this._followingIds);
         await this.zwiftAPI.getFollowing(this.athleteId, {
             pageLimit: 0,
@@ -1951,13 +1947,13 @@ export class StatsProcessor extends events.EventEmitter {
                 if (updates.length) {
                     this.saveAthletes(updates);
                 }
-                await sauce.sleep(backoff *= 1.5);
+                await sauce.sleep(Math.min(1000, backoff *= 1.1));
             }
         });
         for (const x of absent) {
             this._followingIds.delete(x);
         }
-        backoff = 100;
+        backoff = 10;
         absent = new Set(this._followerIds);
         await this.zwiftAPI.getFollowers(this.athleteId, {
             pageLimit: 0,
@@ -1974,7 +1970,7 @@ export class StatsProcessor extends events.EventEmitter {
                 if (updates.length) {
                     this.saveAthletes(updates);
                 }
-                await sauce.sleep(backoff *= 1.5);
+                await sauce.sleep(Math.min(1000, backoff *= 1.1));
             }
         });
         for (const x of absent) {
