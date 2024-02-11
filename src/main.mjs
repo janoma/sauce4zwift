@@ -359,16 +359,11 @@ export async function main({logEmitter, logFile, logQueue, sentryAnonId,
                             loaderSettings, saveLoaderSettings, buildEnv}) {
     const s = Date.now();
     const args = parseArgs([
+        // Do not remove headless arg.  It's informational here but handled by loader.mjs
         {arg: 'headless', type: 'switch',
-         help: 'Do not open windows (unless required on startup)'},
-        {arg: 'force-login', type: 'switch',
-         help: 'Re-login to Zwift accounts'},
-        {arg: 'force-patron-check', type: 'switch',
-         help: 'Force check of patron membership'},
+         help: 'Run in headless mode.  NOTE: All settings for headless mode are seperate from normal mode.'},
         {arg: 'disable-monitor', type: 'switch',
          help: 'Do not start the Zwift monitor (no data)'},
-        {arg: 'host', type: 'str', label: 'HOSTNAME',
-         help: 'Use alternate server for Zwift (i.e. zwift-offline)'},
         {arg: 'athlete-id', type: 'num', label: 'ATHLETE_ID',
          help: 'Override the athlete ID for the main Zwift account'},
         {arg: 'random-watch', type: 'num', optional: true, label: 'COURSE_ID',
@@ -469,7 +464,7 @@ export async function main({logEmitter, logFile, logQueue, sentryAnonId,
     const exclusions = await app.getExclusions(appPath);
     const zwiftAPI = new zwift.ZwiftAPI({exclusions});
     const zwiftMonitorAPI = new zwift.ZwiftAPI({exclusions});
-    const mainUser = await zwiftAuthenticate({api: zwiftAPI, ident: 'zwift-login', ...args});
+    const mainUser = await zwiftAuthenticate({api: zwiftAPI, ident: 'zwift-login'});
     if (!mainUser) {
         await maybeUpdateAndRestart();
         return quit(1);
@@ -478,7 +473,6 @@ export async function main({logEmitter, logFile, logQueue, sentryAnonId,
         api: zwiftMonitorAPI,
         ident: 'zwift-monitor-login',
         monitor: true,
-        ...args
     });
     if (!monUser) {
         await maybeUpdateAndRestart();
@@ -522,11 +516,9 @@ export async function main({logEmitter, logFile, logQueue, sentryAnonId,
         }
     }
     await sauceApp.start({...args, exclusions, zwiftAPI, zwiftMonitorAPI});
-    if (!args.headless) {
-        windows.openWidgetWindows();
-        menu.setWebServerURL(sauceApp.getWebServerURL());
-        menu.updateTrayMenu();
-    }
+    windows.openWidgetWindows();
+    menu.setWebServerURL(sauceApp.getWebServerURL());
+    menu.updateTrayMenu();
     electron.powerMonitor.on('thermal-state-change', state =>
         console.warn("Power thermal state change:", state));
     electron.powerMonitor.on('speed-limit-change', limit =>
