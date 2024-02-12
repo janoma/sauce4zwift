@@ -373,8 +373,8 @@ export async function main({logEmitter, logFile, logQueue, sentryAnonId,
         {arg: 'debug-game-fields', type: 'switch', default: isDEV,
          help: 'Include otherwise hidden fields from game data'},
     ]);
-    if (args.help) {
-        quit();
+    if (!args || args.help) {
+        quit(!args ? 1 : 0);
         return;
     }
     const appPath = electron.app.getPath('userData');
