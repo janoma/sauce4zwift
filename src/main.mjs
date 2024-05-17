@@ -451,6 +451,7 @@ export async function main({logEmitter, logFile, logQueue, sentryAnonId,
     }
     try {
         if (!await windows.eulaConsent()) {
+            console.error('Activation failed or aborted by user.');
             await maybeUpdateAndRestart();
             return quit();
         }
