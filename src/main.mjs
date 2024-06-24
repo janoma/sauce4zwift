@@ -310,26 +310,6 @@ async function zwiftAuthenticate(options) {
 }
 
 
-async function checkForUpdates() {
-    autoUpdater.disableWebInstaller = true;
-    autoUpdater.autoDownload = false;
-    autoUpdater.allowPrerelease = false;
-    let updateAvail;
-    // Auto updater was written by an alien.  Must use events to affirm update status.
-    autoUpdater.once('update-available', () => void (updateAvail = true));
-    try {
-        const update = await autoUpdater.checkForUpdates();
-        if (updateAvail) {
-            return update.versionInfo;
-        }
-    } catch(e) {
-        // A variety of non critical conditions can lead to this, log and move on.
-        console.warn("Auto update problem:", e);
-        return;
-    }
-}
-
-
 async function maybeDownloadAndInstallUpdate({version}) {
     const confirmWin = await windows.updateConfirmationWindow(version);
     if (!confirmWin) {
