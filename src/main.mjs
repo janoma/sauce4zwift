@@ -378,7 +378,8 @@ export async function main({logEmitter, logFile, logQueue, sentryAnonId,
     }
     const appPath = electron.app.getPath('userData');
     storage.initialize(appPath);
-    sauceApp = new ElectronSauceApp({appPath});
+    sauceApp = new ElectronSauceApp({appPath, buildEnv});
+    global.sauceApp = sauceApp;
     if (logEmitter) {
         sauceApp.rpcEventEmitters.set('logs', logEmitter);
         rpc.register(() => logQueue, {name: 'getLogs'});
@@ -394,6 +395,7 @@ export async function main({logEmitter, logFile, logQueue, sentryAnonId,
     }, {name: 'setLoaderSetting'});
     sauceApp.rpcEventEmitters.set('windows', windows.eventEmitter);
     sauceApp.rpcEventEmitters.set('updater', autoUpdater);
+    sauceApp.rpcEventEmitters.set('mods', mods.eventEmitter);
     if (!args.headless) {
         menu.installTrayIcon();
         menu.setAppMenu();
@@ -535,4 +537,3 @@ global.zwift = zwift;
 global.windows = windows;
 global.electron = electron;
 global.mods = mods;
-global.sauceApp = sauceApp;

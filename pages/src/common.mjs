@@ -361,8 +361,18 @@ if (window.isElectron) {
     };
     rpcCall = async function(name, ...args) {
         const encodedArgs = args.map(x => x !== undefined ? b64urlEncode(JSON.stringify(x)) : '');
-        const f = await fetch(`/api/rpc/v2/${name}${args.length ? '/' : ''}${encodedArgs.join('/')}`);
-        const env = await f.json();
+        let resp = await fetch(`/api/rpc/v2/${name}${args.length ? '/' : ''}${encodedArgs.join('/')}`);
+        if (!resp.ok && resp.status === 431) {
+            resp = await fetch(`/api/rpc/v1/${name}`, {
+                method: 'POST',
+                headers: {'content-type': 'application/json'},
+                body: JSON.stringify(args),
+            });
+        }
+        if (!resp.ok && resp.status >= 500) {
+            throw new Error(`RPC network error: ${resp.status}`);
+        }
+        const env = await resp.json();
         if (env.warning) {
             console.warn(env.warning);
         }
@@ -425,18 +435,11 @@ export function longPressListener(el, timeout, callback) {
 
 
 let _worldList;
-export function getWorldList() {
+export async function getWorldList() {
     if (!_worldList) {
-        _worldList = (async () => {
-            const r = await fetch('/shared/deps/data/worldlist.json');
-            if (!r.ok) {
-                console.error("Failed to get worldlist:", r.status);
-                return [];
-            }
-            return await r.json();
-        })();
+        _worldList = rpcCall('getWorldMetas');
     }
-    return _worldList;
+    return await _worldList;
 }
 
 
@@ -1654,6 +1657,56 @@ export function cyrb53(str, seed=0) {
 
 export function hash(str) {
     return cyrb53(str || '');
+}
+
+
+let _crc32Table;
+export function makeCRC32(type) {
+    if (!_crc32Table) {
+        let c;
+        _crc32Table = [];
+        for (let i = 0; i < 256; i++) {
+            c = i;
+            for (let ii = 0; ii < 8; ii++){
+                c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+            }
+            _crc32Table[i] = c;
+        }
+    }
+    let crc = -1;
+    if (type === 'btye') {
+        return u8 => {
+            if (u8 === undefined) {
+                return (crc ^ (-1)) >>> 0;
+            }
+            crc = (crc >>> 8) ^ _crc32Table[(crc ^ u8) & 0xff];
+        };
+    } else if (type === 'number') {
+        const f64Arr = new Float64Array(1);
+        const f64View = new DataView(f64Arr.buffer);
+        return num => {
+            if (num === undefined) {
+                return (crc ^ (-1)) >>> 0;
+            }
+            f64Arr[0] = num;
+            for (let i = 0; i < 8; i++) {
+                crc = (crc >>> 8) ^ _crc32Table[(crc ^ f64View.getUint8(i)) & 0xff];
+            }
+        };
+    } else if (type === 'string') {
+        const encoder = new TextEncoder();
+        return str => {
+            if (str === undefined) {
+                return (crc ^ (-1)) >>> 0;
+            }
+            const arr = encoder.encode(str);
+            for (let i = 0; i < arr.length; i++) {
+                crc = (crc >>> 8) ^ _crc32Table[(crc ^ arr[i]) & 0xff];
+            }
+        };
+    } else {
+        throw new Error("valid type required");
+    }
 }
 
 

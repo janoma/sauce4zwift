@@ -1558,7 +1558,7 @@ export async function main() {
         }
     });
     let athleteId;
-    common.subscribe(`athlete/${athleteIdent}`, ad => {
+    function onAthleteData(ad) {
         assignAthleteGlobals(ad);
         const force = ad.athleteId !== athleteId;
         athleteId = ad.athleteId;
@@ -1568,7 +1568,11 @@ export async function main() {
                 x.render({force});
             }
         }
-    }, {persistent: persistentData});
+    }
+    common.subscribe(`athlete/${athleteIdent}`, onAthleteData, {persistent: persistentData});
+    if (ad) {
+        onAthleteData(ad);
+    }
 }
 
 

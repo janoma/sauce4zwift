@@ -18,6 +18,7 @@ common.settingsStore.setDefault({
 
 const settings = common.settingsStore.get();
 
+const modSafeIds = new Map();
 
 function updateButtonVis() {
     for (const x of ['Analysis', 'Athletes', 'Events']) {
@@ -191,7 +192,6 @@ async function renderProfiles() {
 
 
 async function renderAvailableMods() {
-    document.querySelector('.mods-path.button').addEventListener('click', common.rpc.showModsRootFolder);
     const mods = await common.rpc.getAvailableMods();
     const el = document.querySelector('#mods-container');
     if (!mods || !mods.length) {
@@ -199,27 +199,31 @@ async function renderAvailableMods() {
         return;
     }
     const html = [];
-    const ids = {};
-    for (const {manifest, id, enabled, unpacked} of mods) {
+    for (const {manifest, id, enabled, packed, restartRequired, status} of mods) {
         if (!manifest) {
             continue;
         }
         const safeId = common.sanitizeAttr(id);
-        ids[safeId] = id;
-        const optRemove = !unpacked ?
-            `<span class="button std xs danger" data-mod-action="remove">Remove</span>` :
-            `<small>[unpacked]</small>`;
+        modSafeIds.set(safeId, id);
+        const optRemove = !restartRequired ?
+            packed ?
+                `<span class="button std xs danger" data-mod-action="remove">Remove</span>` :
+                `<small class="badge" style="--sat: 0"
+                        title="Mod is manually installed in the SauceMods folder">unpacked</small>` :
+            '';
+        const enBox = !restartRequired ?
+            `Enabled <input type="checkbox" ${enabled ? 'checked' : ''}/>` :
+            `<small class="badge" style="--sat: 0">${status}</small>`;
         html.push(`
-            <div class="mod" data-id="${safeId}">
+            <div class="mod ${restartRequired ? 'restart-required' : ''}" data-id="${safeId}">
                 <div class="header">
                     <div>
                         <span class="name">${common.stripHTML(manifest.name)}</span>
                         <span class="version">(v${manifest.version})</span>
                         ${optRemove}
                     </div>
-                    <label data-mod-action="enable-toggle" class="enabled">
-                        Enabled
-                        <input type="checkbox" ${enabled ? 'checked' : ''}/>
+                    <label data-mod-action="enable-toggle" class="enabled ${restartRequired ? 'edited' : ''}">
+                        ${enBox}
                         <span class="restart-required"></span>
                     </label>
                 </div>
@@ -240,19 +244,6 @@ async function renderAvailableMods() {
         html.push(`</div>`);
     }
     el.innerHTML = html.join('');
-    el.addEventListener('click', async ev => {
-        const actionEl = ev.target.closest('[data-mod-action]');
-        if (actionEl.dataset.modAction === 'enable-toggle') {
-            const label = ev.target.closest('label.enabled');
-            const enabled = label.querySelector('input').checked;
-            const id = ids[ev.target.closest('.mod[data-id]').dataset.id];
-            label.classList.add('edited');
-            await common.rpc.setModEnabled(id, enabled);
-        } else if (actionEl.dataset.modAction === 'remove') {
-            const id = ids[ev.target.closest('.mod[data-id]').dataset.id];
-            await common.rpc.removePackedMod(id);
-        }
-    });
 }
 
 
@@ -499,6 +490,20 @@ async function initWindowsPanel() {
             fileEl.click();
         }
     });
+    document.querySelector('#mods-container').addEventListener('click', async ev => {
+        const actionEl = ev.target.closest('[data-mod-action]');
+        if (actionEl.dataset.modAction === 'enable-toggle') {
+            const label = ev.target.closest('label.enabled');
+            const enabled = label.querySelector('input').checked;
+            const id = modSafeIds.get(ev.target.closest('.mod[data-id]').dataset.id);
+            label.classList.add('edited');
+            await common.rpc.setModEnabled(id, enabled);
+        } else if (actionEl.dataset.modAction === 'remove') {
+            const id = modSafeIds.get(ev.target.closest('.mod[data-id]').dataset.id);
+            await common.rpc.removePackedMod(id);
+        }
+    });
+    document.querySelector('.mods-path.button').addEventListener('click', common.rpc.showModsRootFolder);
 }
 
 
@@ -543,6 +548,7 @@ export async function settingsMain() {
     });
     common.subscribe('save-widget-window-specs', renderWindows, {source: 'windows'});
     common.subscribe('set-windows', renderWindows, {source: 'windows'});
+    common.subscribe('available-mods-changed', renderAvailableMods, {source: 'mods'});
     extraData.webServerURL = await common.rpc.getWebServerURL();
     const athlete = await common.rpc.getAthlete('self');
     extraData.profileDesc = athlete && athlete.sanitizedFullname;

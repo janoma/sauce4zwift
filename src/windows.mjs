@@ -17,8 +17,6 @@ const electron = require('electron');
 const isWindows = os.platform() === 'win32';
 const isMac = !isWindows && os.platform() === 'darwin';
 const isLinux = !isWindows && !isMac && os.platform() === 'linux';
-const modContentScripts = [];
-const modContentStylesheets = [];
 const sessions = new Map();
 const magicLegacySessionId = '___LEGACY-SESSION___';
 const profilesKey = 'window-profiles';
@@ -50,6 +48,19 @@ class SauceBrowserWindow extends electron.BrowserWindow {
     ident() {
         return (this.subWindow ? '[sub-window] ' : '') +
             (this.spec ? `specId:${this.spec.id}` : `id:${this.id}`);
+    }
+
+    loadFile(pathname, options) {
+        // Same as stock loadFile except we don't inject electron.app.getAppPath().
+        // On windows this will add a drive letter root to all paths. This is
+        // machine dependent, unnecessary and increases the complexity of our
+        // electron.protocol.handle(...) interceptor.
+        return this.loadURL(urlMod.format({
+            protocol: 'file',
+            slashes: true,
+            pathname,
+            ...options,
+        }));
     }
 }
 
@@ -283,14 +294,12 @@ function emulateNormalUserAgent(win) {
 
 
 function onHandleFileProtocol(request) {
-    console.info("NEW SCHOOL file protgo", request.url);
     const url = urlMod.parse(request.url);
     let pathname = url.pathname;
     let rootPath = appPath;
     if (pathname === '/sauce:dummy') {
         return new Response('');
     }
-
     // This allows files to be loaded like watching.___id-here___.html which ensures
     // some settings like zoom factor are unique to each window (they don't conform to origin
     // based sandboxing).
@@ -301,47 +310,42 @@ function onHandleFileProtocol(request) {
         pInfo.base = undefined;
         pathname = path.format(pInfo);
     }
-
     const modMatch = pathname.match(/\/mods\/(.+?)\//);
     if (modMatch) {
         const modId = modMatch[1]; // e.g. "foo-mod-123"
-        const mod = mods.available.find(x => x.id === modId);
-        if (mod) {
-            const root = modMatch[0]; // e.g. "/mods/foo-mod-123/"
-            pathname = pathname.substr(root.length);
-            if (mod.unpacked) {
-                rootPath = mod.modPath;
-            } else {
-                return mod.zip.entryData(path.join(mod.modRootDir, pathname)).then(data => {
-                    const headers = {};
-                    const mimeType = mime.mimeTypesByExt.get(pInfo.ext.substr(1));
-                    if (mimeType) {
-                        headers['content-type'] = mimeType;
-                    } else {
-                        console.warn("Could not determine mime type for:", pathname);
-                    }
-                    return new Response(data, {status: data.byteLength ? 200 : 204, headers});
-                }).catch(e => {
-                    debugger;
-                    if (e.message === 'Entry not found') {
-                        return new Response(null, {status: 404});
-                    } else {
-                        throw e;
-                    }
-                });
-            }
-        } else {
+        const mod = mods.getMod(modId);
+        if (!mod) {
             console.error("Invalid Mod ID:", modId);
             return new Response(null, {status: 404});
         }
+        const root = modMatch[0]; // e.g. "/mods/foo-mod-123/"
+        pathname = pathname.substr(root.length);
+        if (!mod.packed) {
+            rootPath = mod.modPath;
+        } else {
+            return mod.zip.entryData(path.join(mod.zipRootDir, pathname)).then(data => {
+                const headers = {};
+                const mimeType = mime.mimeTypesByExt.get(pInfo.ext.substr(1));
+                if (mimeType) {
+                    headers['content-type'] = mimeType;
+                } else {
+                    console.warn("Could not determine mime type for:", pathname);
+                }
+                return new Response(data, {status: data.byteLength ? 200 : 204, headers});
+            }).catch(e => {
+                if (e.message.match(/(not found|not file)/)) {
+                    return new Response(null, {status: 404});
+                } else {
+                    throw e;
+                }
+            });
+        }
     }
-
     const elFetch = this ? this.fetch.bind(this) : electron.net.fetch;
     return elFetch(`file://${path.join(rootPath, pathname)}`, {bypassCustomProtocolHandlers: true});
 }
-
-
 electron.protocol.handle('file', onHandleFileProtocol);
+
 
 electron.ipcMain.on('getWindowMetaSync', ev => {
     const meta = {
@@ -349,8 +353,8 @@ electron.ipcMain.on('getWindowMetaSync', ev => {
             id: null,
             type: null,
         },
-        modContentScripts,
-        modContentStylesheets,
+        modContentScripts: mods.contentScripts,
+        modContentStylesheets: mods.contentCSS,
     };
     try {
         const win = ev.sender.getOwnerBrowserWindow();
@@ -1189,8 +1193,6 @@ export function openWidgetWindows() {
             for (const x of widgetWindowManifests) {
                 widgetWindowManifestsByType.set(x.type, x);
             }
-            modContentScripts.push(...mods.getWindowContentScripts());
-            modContentStylesheets.push(...mods.getWindowContentStyle());
         } catch(e) {
             console.error("Failed to load mod window data", e);
         }

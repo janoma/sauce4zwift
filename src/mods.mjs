@@ -7,22 +7,24 @@ import * as rpc from './rpc.mjs';
 import * as storage from './storage.mjs';
 import fetch from 'node-fetch';
 import {createRequire} from 'node:module';
+import {EventEmitter} from 'node:events';
 
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
 
 const settingsKey = 'mod-settings';
 const installedKey = 'mod-installed';
-let settings;
-let installed;
+let modsSettings;
+let modsInstalled;
 let upstreamDirectory;
 let unpackedModRoot;
 let packedModRoot;
+const availableMods = [];
+const modsById = new Map();
 
-export const available = [];
-
-rpc.register(() => available, {name: 'getAvailableMods'});
-rpc.register(() => available.filter(x => x.enabled), {name: 'getEnabledMods'});
+export const eventEmitter = new EventEmitter();
+export const contentScripts = [];
+export const contentCSS = [];
 
 
 export class ValidationError extends TypeError {
@@ -34,16 +36,48 @@ export class ValidationError extends TypeError {
 }
 
 
+// Stable output for safe integration with mods.sauce.llc
+function getAvailableModsV1() {
+    return availableMods.map(x => ({
+        id: x.id,
+        manifest: x.manifest,
+        packed: !!x.packed,
+        restartRequired: x.restartRequired,
+        status: x.status,
+        isNew: !!x.isNew,
+        enabled: !!modsSettings[x.id]?.enabled,
+    }));
+}
+rpc.register(getAvailableModsV1); // For stable use outside sauce, i.e. mods.sauce.llc
+rpc.register(getAvailableModsV1, {name: 'getAvailableMods'});
+
+export const getAvailableMods = getAvailableModsV1;
+export const getEnabledMods = () => getAvailableMods().filter(x => x.enabled);
+export const getMod = modsById.get.bind(modsById);
+
+
+function fsRemoveFile(path) {
+    // retries requried for windows.
+    return fs.rmSync(path, {maxRetries: 5});
+}
+
+
+
+
 export function setEnabled(id, enabled) {
-    const mod = available.find(x => x.id === id);
+    const mod = modsById.get(id);
     if (!mod) {
         throw new Error('ID not found');
     }
-    if (!settings[id]) {
-        settings[id] = {};
+    if (!modsSettings[id]) {
+        modsSettings[id] = {};
     }
-    mod.enabled = settings[id].enabled = enabled;
-    storage.set(settingsKey, settings);
+    modsSettings[id].enabled = enabled;
+    storage.set(settingsKey, modsSettings);
+    mod.restartRequired = true;
+    mod.status = enabled ? 'enabling' : 'disabling';
+    eventEmitter.emit('enabled-mod', enabled, mod);
+    eventEmitter.emit('available-mods-changed', mod, availableMods);
 }
 rpc.register(setEnabled, {name: 'setModEnabled'});
 
@@ -116,32 +150,70 @@ const manifestSchema = {
 
 
 export async function init(unpackedDir, packedDir) {
-    settings = storage.get(settingsKey) || {};
-    installed = storage.get(installedKey) || {};
-    available.length = 0;
+    modsSettings = storage.get(settingsKey) || {};
+    modsInstalled = storage.get(installedKey) || {};
+    availableMods.length = 0;
+    modsById.clear();
     try {
-        available.push(..._initUnpacked(unpackedDir));
-        available.push(...(await _initPacked(packedDir)));
+        availableMods.push(..._initUnpacked(unpackedDir));
+        availableMods.push(...await _initPacked(packedDir));
     } catch(e) {
         console.error("MODS init error:", e);
     }
-    return available;
+    for (const mod of availableMods) {
+        modsById.set(mod.id, mod);
+        if (!modsSettings[mod.id]?.enabled) {
+            continue;
+        }
+        mod.status = 'active';
+        if (mod.manifest.content_js) {
+            for (const file of mod.manifest.content_js) {
+                try {
+                    contentScripts.push(await getModFile(mod, file, 'utf8'));
+                } catch(e) {
+                    console.error("Failed to load content script:", mod, e);
+                }
+            }
+        }
+        if (mod.manifest.content_css) {
+            for (const file of mod.manifest.content_css) {
+                try {
+                    contentCSS.push(await getModFile(mod, file, 'utf8'));
+                } catch(e) {
+                    console.error("Failed to load content style:", mod, e);
+                }
+            }
+        }
+
+    }
+    return availableMods;
+}
+
+
+async function getModFile(mod, file, encoding) {
+    if (mod.zip) {
+        const data = await mod.zip.entryData(path.join(mod.zipRootDir, file));
+        return encoding ? data.toString(encoding) : data;
+    } else {
+        return fs.readFileSync(path.join(mod.modPath, file), encoding);
+    }
 }
 
 
 function _initUnpacked(root) {
     try {
-        fs.mkdirSync(root, {recursive: true});
-        unpackedModRoot = root = fs.realpathSync(root);
+        unpackedModRoot = fs.realpathSync(root);
+        fs.mkdirSync(unpackedModRoot, {recursive: true});
     } catch(e) {
         console.warn('MODS folder uncreatable:', root, e);
+        unpackedModRoot = null;
     }
-    if (!root || !fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+    if (!unpackedModRoot || !fs.existsSync(unpackedModRoot) || !fs.statSync(unpackedModRoot).isDirectory()) {
         return [];
     }
     const validMods = [];
-    for (const x of fs.readdirSync(root)) {
-        const modPath = fs.realpathSync(path.join(root, x));
+    for (const x of fs.readdirSync(unpackedModRoot)) {
+        const modPath = fs.realpathSync(path.join(unpackedModRoot, x));
         const f = fs.statSync(modPath);
         if (f.isDirectory()) {
             const manifestPath = path.join(modPath, 'manifest.json');
@@ -152,14 +224,15 @@ function _initUnpacked(root) {
             try {
                 const manifest = JSON.parse(fs.readFileSync(manifestPath));
                 const id = manifest?.id || sanitizeID(x);
-                const isNew = !settings[id];
-                const enabled = !isNew && !!settings[id].enabled;
+                const isNew = !modsSettings[id];
+                const settings = modsSettings[id] = (modsSettings[id] || {});
+                const enabled = !isNew && !!settings.enabled;
                 const label = `${manifest.name} (${id})`;
-                console.info(`Detected unpacked MOD: ${label} [${enabled ? 'ENABLED' : 'DISABLED'}]`);
+                console.info(`Detected unpacked MOD: ${label} ${!enabled ? '[DISABLED]' : ''}`);
                 if (isNew || enabled) {
                     validateManifest(manifest, modPath, label);
                 }
-                validMods.push({manifest, isNew, enabled, id, modPath, unpacked: true});
+                validMods.push({manifest, isNew, id, modPath, packed: false});
             } catch(e) {
                 if (e instanceof ValidationError) {
                     const path = e.key ? e.path.concat(e.key) : e.path;
@@ -186,60 +259,88 @@ async function getUpstreamDirectory() {
 
 async function _initPacked(root) {
     try {
-        fs.mkdirSync(root, {recursive: true});
-        packedModRoot = root = fs.realpathSync(root);
+        packedModRoot = root;
+        fs.mkdirSync(packedModRoot, {recursive: true});
     } catch(e) {
         console.warn('MODS folder uncreatable:', root, e);
-        root = null;
+        packedModRoot = null;
     }
-    if (!root) {
+    if (!packedModRoot) {
         return [];
     }
     const validMods = [];
-    for (const [id, entry] of Object.entries(installed)) {
-        const modSettings = settings[id];
-        if (!modSettings || !modSettings.enabled) {
+    for (const [id, entry] of Object.entries(modsInstalled)) {
+        const settings = modsSettings[id] = (modsSettings[id] || {});
+        if (!settings.enabled) {
             console.warn('Skipping disabled mod:', id);
             continue;
         }
         try {
-            const file = fs.realpathSync(path.join(root, entry.file));
-            const zip = new StreamZip.async({file});
-            let modRootDir;
-            for (const entry of Object.values(await zip.entries())) {
-                if (!entry.isDirectory) {
-                    const p = path.parse(entry.name);
-                    if (p.base === 'manifest.json') {
-                        if (p.dir.split(path.sep).length > 1) {
-                            console.warn("Ignoring over nested manifest.json file:", entry.name);
-                            continue;
-                        }
-                        modRootDir = p.dir;
-                        break;
-                    }
+            const zipFile = path.join(packedModRoot, entry.file);
+            let mod = await openPackedMod(zipFile, id);
+            console.info(`Detected packed MOD: ${mod.manifest.name} - v${mod.manifest.version}`);
+            try {
+                const latestRelease = await getLatestPackedModRelease(id);
+                if (latestRelease && latestRelease.hash !== mod.hash) {
+                    console.warn('Updating packed Mod:', mod.manifest.name, '->', latestRelease.version);
+                    const oldZip = mod.zip;
+                    mod = await installPackedModRelease(id, latestRelease);
+                    oldZip.close();
+                    fsRemoveFile(zipFile);
                 }
+            } catch(e) {
+                console.warn("Failed to check/update Mod:", e);
             }
-            if (modRootDir === undefined) {
-                throw new Error("manifest.json not found");
-            }
-            const manifest = JSON.parse(await zip.entryData(`${modRootDir}/manifest.json`));
-            if (manifest.id && manifest.id !== id) {
-                console.warn("Packed extention ID is diffrent from directory entry", id, manifest.id);
-            }
-            const label = `${manifest.name} (${id})`;
-            console.info(`Detected packed MOD: ${label} [ENABLED]`);
-            validateManifest(manifest, null, label);
-            validMods.push({manifest, isNew: false, enabled: true, id, zip, unpacked: false, modRootDir});
+            validMods.push(mod);
         } catch(e) {
             if (e instanceof ValidationError) {
                 const path = e.key ? e.path.concat(e.key) : e.path;
                 console.error(`Mod validation error [${id}] (${path.join('.')}): ${e.message}`);
             } else {
-                console.error('Invalid manifest.json for:', id, e);
+                console.error('Invalid Mod:', id, entry.file, e);
             }
         }
     }
     return validMods;
+}
+
+
+function packedModHash({file, data}) {
+    const sha256 = crypto.createHash('sha256');
+    if (file) {
+        data = fs.readFileSync(file);
+    }
+    return sha256.update(data).digest('hex');
+}
+
+
+async function openPackedMod(file, id) {
+    const zip = new StreamZip.async({file});
+    let zipRootDir;
+    for (const zEntry of Object.values(await zip.entries())) {
+        if (!zEntry.isDirectory) {
+            const p = path.parse(zEntry.name);
+            if (p.base === 'manifest.json') {
+                if (p.dir.split(path.sep).length > 1) {
+                    console.warn("Ignoring over nested manifest.json file:", zEntry.name);
+                    continue;
+                }
+                zipRootDir = p.dir;
+                break;
+            }
+        }
+    }
+    if (zipRootDir === undefined) {
+        throw new Error("manifest.json not found");
+    }
+    const manifest = JSON.parse(await zip.entryData(`${zipRootDir}/manifest.json`));
+    if (id && manifest.id && manifest.id !== id) {
+        console.warn("Packed extention ID is diffrent from directory ID", id, manifest.id);
+    }
+    const label = `${manifest.name} (${id || 'missing-id'})`;
+    validateManifest(manifest, null, label);
+    const hash = packedModHash({file});
+    return {id, manifest, zipRootDir, zip, hash, packed: true};
 }
 
 
@@ -315,33 +416,34 @@ rpc.register(showModsRootFolder);
 
 export function getWindowManifests() {
     const winManifests = [];
-    for (const {enabled, manifest, id} of available) {
-        if (enabled && manifest.windows) {
-            for (const x of manifest.windows) {
-                const bounds = x.default_bounds || {};
-                try {
-                    winManifests.push({
-                        type: `${id}-${x.id}`,
-                        file: `/mods/${id}/${x.file}`,
-                        mod: true,
-                        modId: id,
-                        query: x.query,
-                        groupTitle: `[MOD]: ${manifest.name}`,
-                        prettyName: x.name,
-                        prettyDesc: x.description,
-                        options: {
-                            width: bounds.width,
-                            height: bounds.height,
-                            x: bounds.x,
-                            y: bounds.y,
-                            aspectRatio: bounds.aspect_ratio,
-                            frame: x.frame,
-                        },
-                        overlay: x.overlay,
-                    });
-                } catch(e) {
-                    console.error("Failed to create window manifest for mod:", id, x.id, e);
-                }
+    for (const {manifest, id} of availableMods) {
+        if (!modsSettings[id]?.enabled || !manifest.windows) {
+            continue;
+        }
+        for (const x of manifest.windows) {
+            const bounds = x.default_bounds || {};
+            try {
+                winManifests.push({
+                    type: `${id}-${x.id}`,
+                    file: `/mods/${id}/${x.file}`,
+                    mod: true,
+                    modId: id,
+                    query: x.query,
+                    groupTitle: `[MOD]: ${manifest.name}`,
+                    prettyName: x.name,
+                    prettyDesc: x.description,
+                    options: {
+                        width: bounds.width,
+                        height: bounds.height,
+                        x: bounds.x,
+                        y: bounds.y,
+                        aspectRatio: bounds.aspect_ratio,
+                        frame: x.frame,
+                    },
+                    overlay: x.overlay,
+                });
+            } catch(e) {
+                console.error("Failed to create window manifest for mod:", id, x.id, e);
             }
         }
     }
@@ -349,97 +451,134 @@ export function getWindowManifests() {
 }
 
 
-export function getWindowContentScripts() {
-    const scripts = [];
-    for (const {enabled, manifest, modPath} of available) {
-        if (enabled && manifest.content_js) {
-            for (const x of manifest.content_js) {
-                try {
-                    scripts.push(fs.readFileSync(path.join(modPath, x), 'utf8'));
-                } catch(e) {
-                    console.error("Failed to load content script:", x, e);
-                }
-            }
-        }
+export async function validatePackedMod(zipUrl) {
+    const resp = await fetch(zipUrl);
+    if (!resp.ok) {
+        throw new Error("Mod fetch error: " + resp.status);
     }
-    return scripts;
+    const data = Buffer.from(await resp.arrayBuffer());
+    const tmpFile = path.join(packedModRoot, `tmp-${crypto.randomUUID()}.zip`);
+    fs.writeFileSync(tmpFile, data);
+    try {
+        const {manifest, zip, hash} = await openPackedMod(tmpFile);
+        zip.close();
+        return {manifest, hash, size: data.byteLength};
+    } finally {
+        fsRemoveFile(tmpFile);
+    }
 }
+rpc.register(validatePackedMod);
 
 
-export function getWindowContentStyle() {
-    const css = [];
-    for (const {enabled, manifest, modPath} of available) {
-        if (enabled && manifest.content_css) {
-            for (const x of manifest.content_css) {
-                try {
-                    css.push(fs.readFileSync(path.join(modPath, x), 'utf8'));
-                } catch(e) {
-                    console.error("Failed to load content style:", x, e);
-                }
-            }
-        }
+async function installPackedModRelease(id, release) {
+    const data = await fetchPackedModRelease(release);
+    const file = `${crypto.randomUUID()}.zip`;
+    fs.writeFileSync(path.join(packedModRoot, file), data);
+    const mod = await openPackedMod(path.join(packedModRoot, file), id);
+    if (!modsInstalled[id]) {
+        modsInstalled[id] = {};
     }
-    return css;
+    Object.assign(modsInstalled[id], {
+        hash: release.hash,
+        file,
+        size: data.byteLength
+    });
+    storage.set(installedKey, modsInstalled);
+    fetch(`https://mod-rank.sauce.llc/edit/${id}/installs`, {method: 'POST'}); // bg okay
+    return mod;
 }
 
 
 export async function installPackedMod(id) {
     console.warn("Installing Mod:", id);
     const dir = await getUpstreamDirectory();
-    const entry = dir.find(x => x.id === id);
-    if (!entry) {
+    const dirEntry = dir.find(x => x.id === id);
+    if (!dirEntry) {
         throw new Error("ID not found: " + id);
     }
-    if (entry.type === 'github') {
-        const release = await getGithubRelease(entry);
-        const resp = await fetch(release.url);
-        if (!resp.ok) {
-            throw new Error("Mod install fetch error: " + resp.status);
-        }
-        const data = Buffer.from(await resp.arrayBuffer());
-        const file = `${crypto.randomUUID()}.zip`;
-        fs.writeFileSync(path.join(packedModRoot, file), data);
-        console.error({release});
-        installed[id] = {
-            release,
-            file,
-        };
-        settings[id] = settings[id] || {};
-        settings[id].enabled = true;
-    } else {
-        throw new TypeError("Unsupported mod release type: " + entry.type);
+    const release = packedModBestRelease(dirEntry.releases);
+    if (!release) {
+        throw new TypeError("No compatible mod release found");
     }
-    storage.set(installedKey, installed);
-    storage.set(settingsKey, settings);
+    const mod = await installPackedModRelease(id, release);
+    mod.restartRequired = true;
+    mod.status = 'installing';
+    modsSettings[id] = (modsSettings[id] || {});
+    modsSettings[id].enabled = true;
+    storage.set(settingsKey, modsSettings);
+    const existing = availableMods.find(x => x.id === id);
+    if (existing) {
+        Object.assign(existing, mod);
+    } else {
+        availableMods.push(mod);
+        modsById.set(id, mod);
+    }
+    eventEmitter.emit('installed-mod', mod);
+    eventEmitter.emit('available-mods-changed', mod, availableMods);
+    fetch(`https://mod-rank.sauce.llc/edit/${id}/installs`, {method: 'POST'}); // bg okay
 }
 rpc.register(installPackedMod);
 
 
 export function removePackedMod(id) {
     console.warn("Removing Mod:", id);
-    const entry = installed[id];
-    if (!entry) {
+    const installed = modsInstalled[id];
+    if (!installed) {
         throw new Error("Mod not found: " + id);
     }
-    delete installed[id];
-    delete settings[id];
-    storage.set(installedKey, installed);
-    storage.set(settingsKey, settings);
-    // maxRetries is for Windows which is broken by design.
-    fs.rmSync(path.join(packedModRoot, entry.file), {maxRetries: 5});
+    delete modsInstalled[id];
+    delete modsSettings[id];
+    storage.set(installedKey, modsInstalled);
+    storage.set(settingsKey, modsSettings);
+    const mod = modsById.get(id);
+    mod.restartRequired = true;
+    mod.status = 'removing';
+    fsRemoveFile(path.join(packedModRoot, installed.file));
+    eventEmitter.emit('removed-mod', mod);
+    eventEmitter.emit('available-mods-changed', mod, availableMods);
 }
 rpc.register(removePackedMod);
+
+
+
+async function fetchPackedModRelease(release) {
+    const resp = await fetch(release.url);
+    if (!resp.ok) {
+        throw new Error("Mod install fetch error: " + resp.status);
+    }
+    const data = Buffer.from(await resp.arrayBuffer());
+    const hash = packedModHash({data});
+    if (hash !== release.hash) {
+        throw new Error("Mod file hash does not match upstream directory hash");
+    }
+    return data;
+}
+
+
+async function getLatestPackedModRelease(id) {
+    const dir = await getUpstreamDirectory();
+    const dirEntry = dir.find(x => x.id === id);
+    if (!dirEntry) {
+        throw new Error("Upstream Mod ID not found: " + id);
+    }
+    const release = packedModBestRelease(dirEntry.releases);
+    if (!release) {
+        console.error('No compatible upstream release found for:', id);
+        return;
+    }
+    return release;
+}
 
 
 function semverOrder(a, b) {
     if (a === b || (!a && !b)) {
         return 0;
     }
-    const A = a ? a.split('.').map(x => x.split('-')[0]) : [];
+    const A = a != null ? a.toString().split('.').map(x => x.split('-')[0]) : [];
     if (A.includes('x')) {
         A.splice(A.indexOf('x'), A.length);
     }
-    const B = b ? b.split('.').map(x => x.split('-')[0]) : [];
+    const B = b != null ? b.toString().split('.').map(x => x.split('-')[0]) : [];
     if (B.includes('x')) {
         B.splice(B.indexOf('x'), B.length);
     }
@@ -458,26 +597,8 @@ function semverOrder(a, b) {
 }
 
 
-async function getGithubRelease(entry) {
-    const releases = entry.releases
-        .sort((a, b) => semverOrder(b.minVersion, a.minVersion))
-        .filter(x => semverOrder(pkg.version, x.minVersion) >= 0);
-    const release = releases[0];
-    if (!release) {
-        console.warn("No compatible release found");
-        return;
-    }
-    const resp = await fetch(
-        `https://api.github.com/repos/${entry.org}/${entry.repo}/releases/${release.id}`);
-    if (!resp.ok) {
-        throw new Error('Github Mod fetch error:', resp.status, await resp.text());
-    }
-    const upstreamRelInfo = await resp.json();
-    const asset = upstreamRelInfo.assets.find(xx => xx.id === release.assetId);
-    return {
-        sig: `${release.id}-${release.assetId}`,
-        url: asset.browser_download_url,
-        date: new Date(asset.updated_at),
-        version: upstreamRelInfo.tag_name,
-    };
+function packedModBestRelease(releases) {
+    return releases
+        .sort((a, b) => semverOrder(b.version, a.version))
+        .filter(x => semverOrder(pkg.version, x.minVersion) >= 0)[0];
 }
