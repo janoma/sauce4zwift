@@ -1,5 +1,6 @@
 import * as common from './common.mjs';
 import {locale, template} from '../../shared/sauce/index.mjs';
+import * as sc from '../deps/src/saucecharts/index.mjs';
 
 common.enableSentry();
 
@@ -28,6 +29,7 @@ export async function main() {
     const athlete = await gettingAthlete;
     if (athlete) {
         document.title = `${athlete.sanitizedFullname} - Sauce for Zwift™`;
+        console.info("Athlete:", athlete);
     }
     const tpl = await gettingTemplate;
     const gcs = await gettingGameConnectionStatus;
@@ -94,8 +96,13 @@ function handleInlineEdit(el, {athleteId, athlete}, rerender) {
 
 export async function render(el, tpl, tplData) {
     const athleteId = tplData.athleteId;
+    if (el._profileCleanup) {
+        el._profileCleanup();
+    }
+    el._profileCleanup = null;
+    el._profileListeners = [];
     const rerender = async () => el.replaceChildren(...(await tpl(tplData)).children);
-    el.addEventListener('click', async ev => {
+    el._profileListeners.push([el, 'click', async ev => {
         const a = ev.target.closest('header a[data-action]');
         if (!a) {
             const editable = ev.target.closest('.inline-edit');
@@ -127,7 +134,45 @@ export async function render(el, tpl, tplData) {
             alert("Invalid command: " + a.dataset.action);
         }
         await rerender();
-    });
+    }]);
+    let rsSparkline;
+    let rsEl;
+    el._profileListeners.push([el, 'click', ev => {
+        const badgeEl = ev.target.closest('.racing-score-avatar-badge');
+        if (!badgeEl || !tplData.athlete?.racingScoreIncompleteHistory?.length) {
+            return;
+        }
+        ev.stopPropagation();
+        rsEl = badgeEl.closest('.racing-score-holder');
+        rsEl.classList.toggle('active');
+        if (rsSparkline) {
+            return;
+        }
+        const history = tplData.athlete.racingScoreIncompleteHistory.map(o => ({
+            y: o.score,
+            ts: o.ts
+        }));
+        if (history.length === 1) {
+            history.unshift({ts: Date.now(), y: history.at(-1).y});
+        }
+        for (const [i, o] of history.entries()) {
+            o.x = i ? history[i - 1].x + Math.min(5, Math.max(1, (o.ts - history[i - 1].ts) / 86400000)) : 0;
+        }
+        rsSparkline = new sc.LineChart({
+            padding: [10, 10, 10, 10],
+            tooltipPosition: 'below middle',
+            xAxis: {disabled: true},
+            yAxis: {disabled: true},
+            el: rsEl.querySelector('.sparkline'),
+            onTooltip: ({entry}) => `${H.date(entry.ts)}: ${entry.y.toFixed(1)}`,
+        });
+        rsSparkline.setData(history);
+    }]);
+    el._profileListeners.push([document, 'click', ev => {
+        if (rsEl && !ev.target.closest('.sparkline')) {
+            rsEl.classList.remove('active');
+        }
+    }]);
     let inGame;
     function setInGame(en) {
         if (en === inGame) {
@@ -150,12 +195,9 @@ export async function render(el, tpl, tplData) {
         liveEls.world.textContent = world ? world.name : '-';
         liveEls.power.innerHTML = H.power(state.power, {suffix: true, html: true});
         liveEls.speed.innerHTML = H.pace(state.speed, {suffix: true, html: true, sport: state.sport});
-        liveEls.hr.textContent = H.number(state.heartrate);
+        liveEls.hr.innerHTML = H.number(state.heartrate, {suffix: 'bpm', html: true});
         liveEls.rideons.textContent = H.number(state.rideons);
-        liveEls.kj.textContent = H.number(state.kj);
-        if (tplData.debug) {
-            document.querySelector('.debug').textContent = JSON.stringify([state, tplData.athlete], null, 4);
-        }
+        liveEls.kj.innerHTML = H.number(state.kj, {suffix: 'kJ', html: true});
     }
     async function getPlayerState() {
         if (!common.isVisible()) {
@@ -168,6 +210,14 @@ export async function render(el, tpl, tplData) {
             updatePlayerState(state);
         }
     }
+    for (const [node, event, handler] of el._profileListeners) {
+        node.addEventListener(event, handler);
+    }
+    const onAthleteData = data => {
+        setInGame(true);
+        updatePlayerState(data.state);
+    };
+    let cleaning = false;
     // Backup for not nearby or in game.
     const pollInterval = setInterval(async () => {
         const now = Date.now();
@@ -176,15 +226,24 @@ export async function render(el, tpl, tplData) {
         }
         await getPlayerState();
     }, 10000);
-    await rerender();
-    await getPlayerState();
-    const onAthleteData = data => {
-        setInGame(true);
-        updatePlayerState(data.state);
-    };
-    await common.subscribe(`athlete/${athleteId}`, onAthleteData);
-    return function cleanup() {
+    function cleanup() {
+        if (cleaning) {
+            return;
+        }
+        cleaning = true;
         clearInterval(pollInterval);
         common.unsubscribe(`athlete/${athleteId}`, onAthleteData);
-    };
+        for (const [node, event, handler] of el._profileListeners) {
+            node.removeEventListener(event, handler);
+        }
+        el._profileListeners.length = 0;
+        el._profileCleanup = null;
+    }
+    el._profileCleanup = cleanup;
+    await rerender();
+    if (!cleaning) {
+        await common.subscribe(`athlete/${athleteId}`, onAthleteData);
+        await getPlayerState();
+    }
+    return cleanup;
 }

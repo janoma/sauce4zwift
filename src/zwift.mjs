@@ -127,10 +127,10 @@ function zwiftCompatDate(date) {
 const cadenceMax = 240 * 1e6 / 60;
 const halfCircle = 1e6 * Math.PI;
 const pbProfilePrivacyFlags = {
-    approvalRequired: 0x1,
+    privateMessaging: 0x1,
     minor: 0x2,
     displayWeight: 0x4,
-    privateMessaging: 0x8,
+    approvalRequired: 0x8,
     defaultFitnessDataPrivacy: 0x10,
     suppressFollowerNotification: 0x20,
 };
@@ -281,6 +281,8 @@ export function processPlayerStateMessage(msg) {
             Math.round(msg._cadenceUHz / 1e6 * 60) : 0,  // rpm
         eventDistance: msg._eventDistance / 100,  // meters
         roadCompletion: flags1.reverse ? 1e6 - adjRoadLoc : adjRoadLoc,
+        // XXX Migrate to just 'COFFEE_STOP' when we roll out that change..
+        coffeeStop: flags2.activePowerUp === 'POWERUP_CNT' || msg.activePowerUp === 'COFFEE_STOP',
     };
 }
 
@@ -395,11 +397,14 @@ export class ZwiftAPI {
             query = new URLSearchParams(Object.entries(query).filter(([k, v]) => v != null));
         }
         const q = query ? `?${query}` : '';
-        const host = options.host || this.host || 'us-or-rly101.zwift.com';
-        const scheme = options.scheme || this.scheme || 'https';
-        const uri = `${scheme}://${host}/${urn.replace(/^\//, '')}`;
+        let uri = options.uri;
+        if (!uri) {
+            const host = options.host || this.host || 'us-or-rly101.zwift.com';
+            const scheme = options.scheme || this.scheme || 'https';
+            uri = `${scheme}://${host}/${urn.replace(/^\//, '')}`;
+        }
         if (!options.silent) {
-            console.debug(`Fetch: ${options.method || 'GET'} ${uri}`);
+            console.debug(`Fetch: ${options.method || 'GET'} ${uri}${q}`);
         }
         const timeout = options.timeout !== undefined ? options.timeout : 30000;
         const r = await fetch(`${uri}${q}`, {
@@ -512,19 +517,22 @@ export class ZwiftAPI {
                 return;
             }
             x.privacy = {
-                defaultActivityPrivacy: x.default_activity_privacy,
+                defaultActivityPrivacy: x.defaultActivityPrivacy,
             };
+            delete x.defaultActivityPrivacy;
             for (const [k, flag] of Object.entries(pbProfilePrivacyFlags)) {
-                x.privacy[k] = !!(+x.privacy_bits & flag);
+                x.privacy[k] = !!(+x.privacyBits & flag);
             }
             for (const [k, flag] of Object.entries(pbProfilePrivacyFlagsInverted)) {
-                x.privacy[k] = !(+x.privacy_bits & flag);
+                x.privacy[k] = !(+x.privacyBits & flag);
             }
+            delete x.privacyBits;
             x.powerSourceModel = {
                 VIRTUAL: 'zPower', // consistent with JSON api; applies to runs too
                 POWER_METER: 'Power Meter',
                 SMART_TRAINER: 'Smart Trainer',
             }[x.powerType];
+            delete x.followerStatusOfLoggedInPlayer;
             return x;
         });
     }
@@ -764,6 +772,10 @@ export class ZwiftAPI {
     }
 
     async getEventSubgroupEntrants(id, options={}) {
+        // WARNING: Yet another buggy event endpoint.
+        // When using participation=signed_up:
+        //   Many duplicates are returned during recent large events.
+        //   Paging is completely broken.
         const entrants = [];
         const limit = options.limit || 100;
         let start = (options.page != null) ? options.page * limit : 0;
@@ -773,7 +785,8 @@ export class ZwiftAPI {
         //   The companion app shows a value of 'entered' but this doesn't work.
         //   So this API will allow asking for {joined: true} as a yet-another-variant
         //   as a means of abstracting from the ambiguous other names.
-        do {
+        const ids = new Set();
+        const mergeFetchPageFrom = async start => {
             const data = await this.fetchJSON(`/api/events/subgroups/entrants/${id}`, {
                 query: {
                     type: options.type || 'all', // or 'leader', 'sweeper', 'favorite', 'following', 'other'
@@ -782,12 +795,30 @@ export class ZwiftAPI {
                     start,
                 }
             });
-            entrants.push(...data);
-            if (data.length < limit) {
+            for (const x of data) {
+                if (!ids.has(x.id)) {
+                    ids.add(x.id);
+                    entrants.push(x);
+                }
+            }
+            return data;
+        };
+        const overlappingHackGets = [];
+        do {
+            const page = await mergeFetchPageFrom(start);
+            if (!options.joined && (start || page.length === limit)) {
+                // XXX Hack: To get even close to the true signed_up list redundant pages must be fetched..
+                const step = 20;
+                for (let i = step; i < limit; i += step) {
+                    overlappingHackGets.push(mergeFetchPageFrom(start + i));
+                }
+            }
+            if (page.length < limit) {
                 break;
             }
-            start += data.length;
+            start += page.length;
         } while (options.page == null);
+        await Promise.all(overlappingHackGets);
         return entrants;
     }
 
@@ -796,23 +827,26 @@ export class ZwiftAPI {
         return results;
     }
 
-    async getWorkout(workoutId, options={}) {        
+    // XXX this returns different data types and values depending on options.all
+    // XXX probably should be two unrelated functions
+    async getWorkout(workoutId, options={}) {
+        console.warn('XXX: subject to change');
         let results = {};
         if (options.all) {
             let page = 1;
-            let pageSize = 100;
-            let allWorkouts = []
+            const pageSize = 100;
+            const allWorkouts = [];
             while (true) {
                 const workouts = await this.fetchJSON(`/api/workout/workouts`, {
                     query: {
                         filter: null,
                         sort: null,
                         page: page,
-                        pageSize: pageSize,
+                        pageSize,
                     }
                 });
-                if (workouts.length > 0) {                        
-                    for (let w of workouts) {
+                if (workouts.length) {
+                    for (const w of workouts) {
                         allWorkouts.push(w);
                     }
                     page++;
@@ -822,20 +856,22 @@ export class ZwiftAPI {
             }
             results = allWorkouts;
         } else {
-            await this.fetchJSON(`/api/workout/workouts/${workoutId}`) // get the workout
-                .then(workout => this.fetch(workout.workoutAssetUrl.replace("https://us-or-rly101.zwift.com/",""))) // get the workoutAsset
-                .then(workoutDetails => workoutDetails.text()) 
-                .then(workoutText => results = workoutText)
+            const workout = await this.fetchJSON(`/api/workout/workouts/${workoutId}`);
+            const detailsResp = await this.fetch({uri: workout.workoutAssetUrl});
+            const details = await detailsResp.text();
+            return details; // XXX should probably return workout with property containing parsed xml
         }
         return results;
     }
 
-    async getWorkoutCollection(collectionID, options={}) {        
+    async getWorkoutCollection(collectionID, options={}) {
         let results = {};
         if (options.all) {
-            results = await this.fetchJSON(`/api/workout/collections?pageSize=100`)
+            // XXX Handle paging...
+            results = await this.fetchJSON(`/api/workout/collections?pageSize=100`);
         } else {
-            results = await this.fetchJSON(`/api/workout/collections/${collectionID}/workouts?pageSize=100`)
+            // XXX Handle paging...
+            results = await this.fetchJSON(`/api/workout/collections/${collectionID}/workouts?pageSize=100`);
         }
         return results;
     }
@@ -1312,6 +1348,15 @@ class UDPChannel extends NetChannel {
     }
 
     onUDPData(buf) {
+        try {
+            this._onUDPData(buf);
+        } catch(e) {
+            console.error("UDP recv handler error:", e);
+            this.incError();
+        }
+    }
+
+    _onUDPData(buf) {
         this.recvCount++;
         const stc = protos.ServerToClient.decode(this.decrypt(buf));
         this.emit('inPacket', stc, this);
@@ -1481,6 +1526,10 @@ export class GameMonitor extends events.EventEmitter {
         console.error("XXX", await resp.text());
     }
 
+    async getTCPConfig() {
+        return await this.api.fetchPB('/relay/tcp-config', {protobuf: 'TCPConfig'});
+    }
+
     async getRandomAthleteId(courseId) {
         const worlds = (await this.api.getDropInWorldList()).filter(x =>
             typeof courseId !== 'number' || x.courseId === courseId);
@@ -1611,6 +1660,7 @@ export class GameMonitor extends events.EventEmitter {
         }
         console.info("Refreshing Zwift relay session...");
         const relaySessionId = this._session.relayId;
+        // XXX I've seen the real client trying /relay/sessin/renew as well
         const resp = await this.api.fetchPB('/relay/session/refresh', {
             method: 'POST',
             pb: protos.RelaySessionRefreshRequest.encode({relaySessionId}),
@@ -1725,7 +1775,7 @@ export class GameMonitor extends events.EventEmitter {
         clearTimeout(this._connectRetryTimeout);
         this.disconnect();
         const backoffCount = this.connectingCount + this._errCount;
-        const delay = Math.max(1000, (backoffCount * 1000) - (Date.now() - this.connectingTS));
+        const delay = Math.max(1000, (1000 * 1.2 ** backoffCount) - (Date.now() - this.connectingTS));
         console.warn('Next connect retry:', fmtTime(delay));
         this._connectRetryTimeout = setTimeout(this.connect.bind(this), delay);
     }
@@ -1801,6 +1851,7 @@ export class GameMonitor extends events.EventEmitter {
                         watchingAthleteId: this.watchingAthleteId,
                         _flags2: portal ? encodePlayerStateFlags2({roadId: lws.roadId}) : undefined,
                         portal,
+                        eventSubgroupId: lws?.eventSubgroupId,
                         ...this.watchingStateExtra});
                     break;
                 } catch(e) {
@@ -1848,13 +1899,20 @@ export class GameMonitor extends events.EventEmitter {
         }
         const id = this._refreshStatesTimeout;
         try {
-            await this._refreshGameState();
+            const age = await this._refreshGameState();
             if (this.gameAthleteId !== this.watchingAthleteId) {
                 await this._refreshWatchingState();
             }
-            this._stateRefreshDelay = Math.max(this._stateRefreshDelayMin, this._stateRefreshDelay * 0.999);
+            if (age > 15000) {
+                // Stop harassing relay servers and relax state fetch...
+                this.suspend();
+                this._stateRefreshDelay = Math.min(this._stateRefreshDelay * 1.02, 30000);
+            } else {
+                this._stateRefreshDelay = Math.max(this._stateRefreshDelay * 0.99,
+                                                   this._stateRefreshDelayMin);
+            }
         } catch(e) {
-            this._stateRefreshDelay *= 1.15;
+            this._stateRefreshDelay = Math.min(this._stateRefreshDelay * 1.15, 300000);
             if (e.status !== 429) {
                 if (e.name === 'FetchError') {
                     console.warn("Refresh states network problem:", e.message);
@@ -1874,7 +1932,7 @@ export class GameMonitor extends events.EventEmitter {
         const age = Date.now() - this._lastGameStateUpdated;
         if (age < this._stateRefreshDelay * 0.95) {
             // Optimized out by data stream
-            return;
+            return age;
         }
         const state = this.gameAthleteId != null ? await this.api.getPlayerState(this.gameAthleteId) : null;
         if (!state) {
@@ -1886,9 +1944,6 @@ export class GameMonitor extends events.EventEmitter {
                 } else {
                     console.info("Switching to new random athlete:", this.gameAthleteId);
                 }
-            } else if (age > 15 * 1000) {
-                // Stop harassing the UDP channel..
-                this.suspend();
             }
         } else {
             // The stats proc works better with these being recently available.
@@ -1898,6 +1953,7 @@ export class GameMonitor extends events.EventEmitter {
                 this._updateWatchingState(state);
             }
         }
+        return Date.now() - this._lastGameStateUpdated;
     }
 
     async _refreshWatchingState() {
@@ -1988,10 +2044,10 @@ export class GameMonitor extends events.EventEmitter {
 
     onInPacket(pb, ch) {
         if (pb.multipleLogins) {
-            console.error("Multiple logins detected!");
-            this.emit('multiple-logins');
-            this.stop();
-            return;
+            console.warn("Multiple logins detected!");
+            //this.emit('multiple-logins');
+            //this.stop();
+            //return;
         }
         if (pb.udpConfigVOD) {
             for (const x of pb.udpConfigVOD.pools) {
